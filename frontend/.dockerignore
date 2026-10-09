@@ -1,0 +1,30 @@
+# 构建上下文 = frontend/。宿主机上的 node_modules/.next 是平台相关二进制，
+# 绝不能进镜像（docs/vm-deploy.md 开头就是这条警告）。
+
+# ---- 依赖与构建产物：镜像里自己装 ----
+node_modules/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+next-env.d.ts
+
+# ---- 密钥/环境：NEXT_PUBLIC_* 走 --build-arg 传入 ----
+.env
+.env.*
+!.env.local.example
+
+# ---- 日志/缓存 ----
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# ---- 编辑器与系统 ----
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# ---- 版本控制 ----
+.git/
+.gitignore

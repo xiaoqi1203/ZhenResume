@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# 运行期数据（含用户简历原文，绝不入库）
+backend/data/
+backend/.env
+
+# 视觉自查产物（无头浏览器截图与临时裁图，仅供设计迭代）
+.shots/
+
+# 前端
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env.local
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

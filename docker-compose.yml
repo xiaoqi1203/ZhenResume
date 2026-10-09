@@ -1,0 +1,59 @@
+name: zhenresume
+services:
+  backend:     # 缩进2空格，属于services下面
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        PIP_INDEX_URL: "${PIP_INDEX_URL:-}"
+    image: zhenresume-backend:1.0.0
+    container_name: zhenresume-backend
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    environment:
+      DATABASE_URL: sqlite+pysqlite:////app/data/zhenresume.db
+      UPLOAD_DIR: /app/data/uploads
+      CORS_ORIGINS: "${CORS_ORIGINS:-http://127.0.0.1:3000,http://localhost:3000}"
+      FRONTEND_BASE_URL: "${FRONTEND_BASE_URL:-http://localhost:3000}"
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
+      LLM_MODEL: "${LLM_MODEL:-deepseek-chat}"
+      LIBREOFFICE_NODE: "${LIBREOFFICE_NODE:-}"
+      LIBREOFFICE_CLI: "${LIBREOFFICE_CLI:-}"
+    volumes:
+      - zhenresume-data:/app/data
+      - /home/xiaoqi/ZhenResume:/app
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  frontend:    # 同样缩进2空格
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE: "${NEXT_PUBLIC_API_BASE:-http://192.168.10.128:8000}"
+        NPM_REGISTRY: "${NPM_REGISTRY:-https://registry.npmjs.org}"
+    image: zhenresume-frontend:1.0.0
+    container_name: zhenresume-frontend
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  zhenresume-data:
+    name: zhenresume-data
