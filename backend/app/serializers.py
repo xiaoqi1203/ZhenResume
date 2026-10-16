@@ -163,6 +163,7 @@ def serialize_report(
     task: AnalysisTask | None = None,
     resume: Resume | None = None,
     jd: JobDescription | None = None,
+    benchmark: dict | None = None,
 ) -> dict:
     extra = report.extra_json or {}
     editor_content = _editor_content_of(resume)
@@ -189,6 +190,10 @@ def serialize_report(
         "missing_keywords": extra.get("missing_keywords") or [],
         "action_items": extra.get("action_items") or [],
         "knowledge_refs": extra.get("knowledge_refs") or [],
+        # 同岗位对标（契约 §5.3）：由 api/reports.py 计算后传入。
+        # 这里保持序列化器"无 DB 依赖"（纯函数），所以不在本函数里查 role_stats。
+        # 为 None 表示样本不足或岗位族未知 —— 前端应整块隐藏，不要展示空壳。
+        "benchmark": benchmark,
         "disclaimer": extra.get("disclaimer") or DISCLAIMER,
     }
 

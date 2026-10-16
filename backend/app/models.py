@@ -21,6 +21,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -81,9 +82,42 @@ class Resume(Base):
     file_name: Mapped[str | None] = mapped_column(String(255))
     mime_type: Mapped[str | None] = mapped_column(String(100))
     size_bytes: Mapped[int | None] = mapped_column(Integer)
+    # ---- 去重（方案 v2 §1）----
+    # L1：原始文件字节 sha256；L2：归一化文本 sha256（解决"同一简历导成 PDF 和 DOCX 各传一次"）。
+    # ⚠️ 不加全局唯一约束：同一文件被不同用户各传一份是两份数据，多租户下不能互相可见；
+    #    唯一性只在"同一 user + 同一 hash"范围内判定（见 services/dedup.py）。
+    file_sha256: Mapped[str | None] = mapped_column(String(64))
+    content_sha256: Mapped[str | None] = mapped_column(String(64))
+    # 命中去重时指向被复用的那份简历
+    duplicate_of: Mapped[str | None] = mapped_column(String(36), ForeignKey("resumes.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     tasks: Mapped[list["AnalysisTask"]] = relationship(back_populates="resume", cascade="all, delete-orphan")
+
+
+class RoleStats(Base):
+    """岗位族聚合统计（方案 v2 §2）：**只存聚合量，永不存简历原文**。
+
+    这是 HR 侧数据唯一被允许落库的形态。为什么这样合法：
+    - 存进去的是"该岗位族所有高分简历的平均要点字数"这类**聚合统计量**，个体在聚合中消失；
+    - 配合 `sample_size >= 10` 闸门（见 scripts/aggregate_stats.py），
+      避免"某格只有 1 条 → 反推出那个人"的可识别性。
+
+    两个消费者：
+    1. 内部 —— 生成/校准知识库里的「岗位能力模型」（替换手写文档）；
+    2. 外部 —— 诊断报告的"同岗位对标"栏（"你 68 字，同岗位高分 42 字"）。
+    """
+
+    __tablename__ = "role_stats"
+    __table_args__ = (UniqueConstraint("role_family", "period", name="uq_role_stats_family_period"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    role_family: Mapped[str] = mapped_column(String(64))       # 后端 / 算法 / 前端 …
+    period: Mapped[str] = mapped_column(String(8))             # '2026-Q1'
+    sample_size: Mapped[int] = mapped_column(Integer, default=0)
+    score_p75: Mapped[int | None] = mapped_column(Integer)      # 该格的"高分线"
+    metrics: Mapped[dict | None] = mapped_column(JSON)          # 见 aggregate_stats.py 的 METRIC 说明
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
 class JobDescription(Base):
@@ -181,6 +215,11 @@ class ReportFinding(Base):
 
 class WorkflowStep(Base):
     __tablename__ = "workflow_steps"
+    # 一个任务的一个步骤只能有一行：LangGraph 重放/续跑时靠它保证 upsert 语义，
+    # 否则重复行会让 SUM(tokens)/SUM(cost) 虚高、成本看板失真。
+    __table_args__ = (
+        UniqueConstraint("task_id", "step_name", name="uq_workflow_step_task_name"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     task_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("analysis_tasks.id", ondelete="CASCADE"))

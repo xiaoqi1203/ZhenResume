@@ -40,6 +40,39 @@ def section(title: str) -> None:
     print(f"\n{'=' * 72}\n{title}\n{'=' * 72}")
 
 
+def _wait_task(client: TestClient, headers: dict, task_id: str, timeout: int = 900) -> None:
+    """executor=celery 时任务跑在独立 worker 进程里，TestClient 不会"等它跑完"。
+
+    inline 模式下任务在响应返回前已完成，这里直接返回 —— 两种模式共用同一份断言。
+    """
+    if settings.workflow_executor != "celery":
+        return
+    import time as _time
+
+    deadline = _time.time() + timeout
+    while _time.time() < deadline:
+        body = client.get(f"/api/v1/tasks/{task_id}", headers=headers).json()
+        if body.get("status") in {"done", "failed"}:
+            return
+        _time.sleep(1)
+    print(f"    ! 等待任务 {task_id} 超时（{timeout}s）")
+
+
+def _wait_batch(client: TestClient, headers: dict, batch_id: str, timeout: int = 1800) -> None:
+    """同上：等 HR 批次整体跑完。"""
+    if settings.workflow_executor != "celery":
+        return
+    import time as _time
+
+    deadline = _time.time() + timeout
+    while _time.time() < deadline:
+        body = client.get(f"/api/v1/hr/batches/{batch_id}", headers=headers).json()
+        if body.get("status") in {"done", "failed"}:
+            return
+        _time.sleep(2)
+    print(f"    ! 等待批次 {batch_id} 超时（{timeout}s）")
+
+
 def main() -> int:
     # 显式建表 + 灌种子：不依赖 TestClient 是否触发 lifespan，脚本单独运行也可靠
     init_db()
@@ -137,7 +170,9 @@ def _run(client: TestClient) -> int:
     task_id = task_resp.json()["task_id"]
     check("任务初始状态为 pending 或 running", task_resp.json()["status"] in {"pending", "running"}, task_resp.text[:200])
 
-    # TestClient 会在响应返回前跑完后台任务，因此这里应已 done
+    # TestClient 会在响应返回前跑完后台任务（inline 模式）；
+    # executor=celery 时任务在独立 worker 里跑，这里轮询等它结束。
+    _wait_task(client, headers, task_id)
     task_detail = client.get(f"/api/v1/tasks/{task_id}", headers=headers)
     check("任务详情返回 200", task_detail.status_code == 200, task_detail.text[:200])
     tdata = task_detail.json()
@@ -237,6 +272,7 @@ def _run(client: TestClient) -> int:
     # 不可变性的二次验证：同一简历重跑，分数必须一致
     task2 = client.post("/api/v1/tasks", headers=headers, json={"resume_id": weak_data["resume_id"], "jd_id": jd_id})
     if task2.status_code == 202:
+        _wait_task(client, headers, task2.json()["task_id"])
         report2_id = client.get(f"/api/v1/tasks/{task2.json()['task_id']}", headers=headers).json().get("report_id")
         if report2_id:
             report2 = client.get(f"/api/v1/reports/{report2_id}", headers=headers).json()
@@ -333,6 +369,7 @@ def _run(client: TestClient) -> int:
     batch_id = batch.json()["batch_id"]
     check("批次 total 正确", batch.json()["total"] == 3, str(batch.json()))
 
+    _wait_batch(client, headers, batch_id)
     batch_detail = client.get(f"/api/v1/hr/batches/{batch_id}", headers=headers)
     check("批次详情返回 200", batch_detail.status_code == 200, batch_detail.text[:200])
     bdata = batch_detail.json()
@@ -554,6 +591,7 @@ def _run(client: TestClient) -> int:
     ed_task = client.post("/api/v1/tasks", headers=headers, json={"resume_id": ed["resume_id"], "jd_id": jd_id})
     check("编辑器简历可发起诊断", ed_task.status_code == 202, ed_task.text[:200])
     if ed_task.status_code == 202:
+        _wait_task(client, headers, ed_task.json()["task_id"])
         ed_state = client.get(f"/api/v1/tasks/{ed_task.json()['task_id']}", headers=headers).json()
         check("编辑器简历诊断完成", ed_state["status"] == "done", f"{ed_state['status']} / {ed_state.get('error')}")
         if ed_state.get("report_id"):
@@ -610,6 +648,7 @@ def _run(client: TestClient) -> int:
         gap_task = client.post("/api/v1/tasks", headers=headers, json={"resume_id": gap_resume.json()["resume_id"], "jd_id": jd_id})
         check("含空窗期说明的简历可发起诊断", gap_task.status_code == 202, gap_task.text[:200])
         if gap_task.status_code == 202:
+            _wait_task(client, headers, gap_task.json()["task_id"])
             gap_state = client.get(f"/api/v1/tasks/{gap_task.json()['task_id']}", headers=headers).json()
             if gap_state.get("report_id"):
                 gap_report = client.get(f"/api/v1/reports/{gap_state['report_id']}", headers=headers).json()

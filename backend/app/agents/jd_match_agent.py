@@ -67,7 +67,10 @@ class JdMatchAgent(Agent):
             for item in (data.get("false_gaps") or [])
             if isinstance(item, dict) and str(item.get("keyword", "")).strip()
         }
-        llm_gaps = coerce_findings(data.get("real_gaps_as_findings"), default_category="gap", ctx=ctx)
+        llm_gaps = coerce_findings(
+            data.get("real_gaps_as_findings"), default_category="gap", ctx=ctx,
+            origin=("llm" if result.mode == "live" else "rule"),
+        )
 
         # 剔除被判定为"表述差异"的误报
         kept_gaps = [f for f in baseline_gaps if not _suppressed_by(f, false_gaps)]

@@ -29,8 +29,9 @@ import { Textarea } from '@/components/ui/textarea';
 import { RiskBadge } from '@/components/risk-badge';
 import { EmptyState, ErrorBanner, InlineSpinner } from '@/components/states';
 import { ACCEPT_ATTRIBUTE, formatFileSize, validateResumeFile } from '@/components/upload-dropzone';
+import { useBatchFeed } from '@/lib/use-batch-feed';
 
-const POLL_INTERVAL_MS = 2000;
+// 轮询间隔已移入 useBatchFeed（默认走 SSE，失败才回落 2s 轮询）
 
 type UploadState = 'waiting' | 'uploading' | 'done' | 'failed';
 
@@ -119,30 +120,18 @@ export default function HrPage() {
     setEntries((prev) => prev.filter((entry) => entry.id !== id));
   };
 
-  /* -------------------- 轮询批次 -------------------- */
-  React.useEffect(() => {
-    const batchId = batch?.batch_id;
-    if (!batchId) return;
-    if (batch.status === 'done' || batch.status === 'failed') return;
-
-    let cancelled = false;
-    const timer = setTimeout(async () => {
-      try {
-        const next = await getBatch(batchId);
-        if (!cancelled) {
-          setBatch(next);
-          setBatchError(null);
-        }
-      } catch (err) {
-        if (!cancelled) setBatchError(describeError(err));
-      }
-    }, POLL_INTERVAL_MS);
-
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [batch]);
+  /* -------------------- 批次进度：默认 SSE，失败自动回落 2s 轮询 -------------------- */
+  // 逻辑都在 hook 里（与样式无关）：item_done 到达时把那一行并进 items，
+  // HR 能看到进度条逐个候选人点亮，而不是 3/100 这种数字跳变。
+  const { mode: _feedMode } = useBatchFeed(
+    batch?.batch_id,
+    batch,
+    (next) => {
+      setBatch(next);
+      setBatchError(null);
+    },
+    (message) => setBatchError(message),
+  );
 
   const doneCount = entries.filter((entry) => entry.state === 'done').length;
   const uploadProgress = entries.length === 0 ? 0 : Math.round((doneCount / entries.length) * 100);

@@ -44,17 +44,36 @@ class SuggestionAgent(Agent):
             system=ctx.prompt("suggestion_agent"), user=user, mock_factory=mock_factory, agent=self.name
         )
 
-        llm_findings = coerce_findings(result.data.get("findings"), default_category="ats", ctx=ctx)
-
+        llm_findings = coerce_findings(
+            result.data.get("findings"), default_category="ats", ctx=ctx,
+            origin=("llm" if result.mode == "live" else "rule"),
+        )
         if llm_findings:
-            # LLM 版本为主，但保留规则层中被 LLM 漏掉的红色风险（不能因为模型疏忽而丢风险）
-            red_kept = [f for f in baseline if f["severity"] == "red" and not _covered(f, llm_findings)]
-            findings = merge_findings(llm_findings, red_kept)
+            # **规则层条目一律保留（连措辞一起保留）**，LLM 中与规则层重复的条目让位。
+            #
+            # 为什么不是"LLM 为主 + 抢救规则层"：规则层是评分、排名与回归断言的唯一依据
+            # （见 analyze.compute_scores_deterministic）。一旦它被 LLM 条目挤掉，
+            # 就会出现"同一份简历两次诊断分数不同""时间线空窗条目消失"（两者都已实测发生）。
+            #
+            # 两个细节：
+            # - 用**未截断的 candidates**，不能用 baseline —— baseline 已 `[:MAX_FINAL]`，
+            #   黄色的「时间线空窗」、绿色的「已说明空窗期」在红色关键词问题多时早被截掉了；
+            # - 保留规则层原文措辞，而不是用 LLM 的同义改写顶替 —— 报告里"已主动说明，处理得当"
+            #   这类确定性结论必须逐字稳定（回归断言按文案匹配）。
+            rule_all = [f for f in candidates if f.get("origin", "rule") == "rule"]
+            llm_only = [
+                f for f in llm_findings
+                if not any(_covered(r, [f]) for r in rule_all)
+            ]
+            findings = merge_findings(rule_all, llm_only)
         else:
             findings = baseline
 
         findings = _select_final(findings)
         findings = _ensure_minimum(findings, ctx)
+        # 兜底：suggestion 内部生成的正向/补充条目没有来源标记，一律按确定性条目处理
+        for item in findings:
+            item.setdefault("origin", "rule")
 
         action_items = [
             str(item).strip()
@@ -102,15 +121,47 @@ def _select_final(findings: list[dict], limit: int = MAX_FINAL) -> list[dict]:
     会把"时间线空窗""技能与项目矛盾"这类只有黄色、但危害更大的风险挤出报告，
     导致风险维度得分虚高（曾经出现过弱简历风险安全度 100 分的情况）。
     先给每个类别保底一条，再按严重度补足，才能保证五个维度都被看见。
+
+    live 模式还多一层保护（**规则层优先**）：评分只认规则层条目，若它们被 LLM 条目
+    挤掉，就会出现"同一份简历两次诊断分数不同"。因此：
+    - 同严重度下规则层条目排在前面；
+    - 规则层的**风险类**条目（时间线空窗、夸大表述、合规敏感项）直接预留名额，
+      不参与 8 条上限的竞争 —— 它们危害最大且是确定性结论。
+    mock 模式下没有 llm 条目，上述保护不生效，行为与改动前一字不差。
     """
-    ordered = analyze.sort_findings(findings)
+    category_order = {"ats": 0, "impact": 1, "risk": 2, "clarity": 3, "gap": 4}
+    ordered = sorted(
+        findings,
+        key=lambda f: (
+            analyze.SEVERITY_ORDER.get(f.get("severity", "yellow"), 1),
+            0 if f.get("origin", "rule") == "rule" else 1,
+            category_order.get(f.get("category", ""), 9),
+        ),
+    )
+
+    has_llm = any(f.get("origin") == "llm" for f in ordered)
 
     picked: list[dict] = []
     picked_ids: set[int] = set()
     seen_categories: set[str] = set()
 
+    # 0) 规则层条目：**全部预留名额**，不参与 8 条上限的竞争。
+    #    它们既是评分依据（analyze.compute_scores_deterministic），
+    #    也是回归断言的匹配对象（如「已主动说明，处理得当」这条绿色正面结论，
+    #    是规则层把"已说明空窗期"转成的确定性条目 —— 被挤掉就会同时丢掉
+    #    "已说明空窗期"的正向反馈与断言）。留下的名额才给 LLM 条目。
+    #    mock 模式下没有 llm 条目，这段不生效 —— 保证既有行为一字不变。
+    if has_llm:
+        for item in ordered:
+            if item.get("origin", "rule") == "rule":
+                picked.append(item)
+                picked_ids.add(id(item))
+                seen_categories.add(item.get("category", ""))
+
     # 1) 每个类别保底一条（ordered 已按严重度排序，取到的即该类别最严重的一条）
     for item in ordered:
+        if len(picked) >= limit:
+            break
         category = item.get("category", "")
         if category in seen_categories:
             continue
@@ -126,7 +177,7 @@ def _select_final(findings: list[dict], limit: int = MAX_FINAL) -> list[dict]:
             picked.append(item)
             picked_ids.add(id(item))
 
-    return analyze.sort_findings(picked)[:limit]
+    return analyze.sort_findings(picked)
 
 
 def _breakdown(findings: list[dict]) -> dict:

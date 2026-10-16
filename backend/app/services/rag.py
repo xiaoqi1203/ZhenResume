@@ -7,6 +7,7 @@ MVP 在 Python 侧做暴力检索；换 pgvector 后改为 SQL `ORDER BY embeddi
 
 from __future__ import annotations
 
+import logging
 import re
 
 from sqlalchemy import select
@@ -14,6 +15,8 @@ from sqlalchemy.orm import Session
 
 from ..models import KnowledgeChunk, KnowledgeDoc
 from . import embeddings
+
+logger = logging.getLogger(__name__)
 
 _CHUNK_TARGET = 420
 _CHUNK_OVERLAP = 60
@@ -39,22 +42,33 @@ def split_chunks(content: str, *, target: int = _CHUNK_TARGET, overlap: int = _C
 
 
 def index_document(db: Session, doc: KnowledgeDoc) -> int:
-    """把文档切片并写入向量，返回切片数。重复入库前会清掉旧切片。"""
+    """把文档切片并写入向量，返回切片数。重复入库前会清掉旧切片。
+
+    切片**批量**向量化（provider=http 时一次请求多条），比逐条调用快一个量级。
+    """
     db.query(KnowledgeChunk).filter(KnowledgeChunk.doc_id == doc.id).delete(synchronize_session=False)
 
-    count = 0
-    for i, text in enumerate(split_chunks(doc.content or "")):
+    chunks = split_chunks(doc.content or "")
+    # strict=True：建索引只走主层、不允许回退（回退会让同一索引混入两个模型的向量）
+    vectors = embeddings.embed_many(chunks, strict=True)
+    served_model = embeddings.last_served_model()
+    for i, (text, vector) in enumerate(zip(chunks, vectors)):
         db.add(
             KnowledgeChunk(
                 doc_id=doc.id,
                 chunk_text=text,
-                embedding=embeddings.embed(text),
-                doc_metadata={"index": i, "title": doc.title, "scope": doc.scope, **(doc.doc_metadata or {})},
+                embedding=vector,
+                doc_metadata={
+                    "index": i, "title": doc.title, "scope": doc.scope,
+                    # 记下这个向量是哪个模型产的：换模型后没重建索引时，
+                    # 检索侧靠它判断"查询向量与库内向量不是同一个模型"并降级
+                    "embedding_model": served_model,
+                    **(doc.doc_metadata or {}),
+                },
             )
         )
-        count += 1
     db.flush()
-    return count
+    return len(chunks)
 
 
 def search(
@@ -75,12 +89,46 @@ def search(
         return []
 
     query_vec = embeddings.embed(query)
+
+    # 一致性守卫（两类都会让 cosine 恒为 0 或失去意义）：
+    # ① 维度不一致：换了 embedding 模型但没重建索引；
+    # ② **模型不一致**：查询向量由 A 模型产生、库内向量由 B 模型产生 ——
+    #    维度可能相同，但向量空间不同，余弦相似度没有意义。
+    # 两种情况都退化为**纯词面检索**，保证 RAG 不整体失效，并在日志里明确报出来。
+    stored_models = {
+        (c.doc_metadata or {}).get("embedding_model")
+        for c, _d in rows
+        if (c.doc_metadata or {}).get("embedding_model")
+    }
+    served = embeddings.last_served_model()
+    vector_usable = True
+    for chunk, _doc in rows:
+        if chunk.embedding and len(chunk.embedding) != len(query_vec):
+            vector_usable = False
+            break
+    if vector_usable and stored_models and served and served not in stored_models:
+        vector_usable = False
+        logger.warning(
+            "查询向量来自 %s，但库里是 %s —— 不是同一个模型，纯向量比较无效，"
+            "本次退化为纯词面检索。换模型后必须重建索引：python -m scripts.seed_knowledge --force",
+            served, "、".join(sorted(stored_models)),
+        )
+    if not vector_usable and not stored_models:
+        logger.warning(
+            "查询向量 %d 维与库内向量维度不一致，本次退化为纯词面检索。"
+            "请检查 EMBEDDING_* 配置与 EMBEDDING_DIM，并重建索引："
+            "python -m scripts.seed_knowledge --force",
+            len(query_vec),
+        )
+
     hits: list[dict] = []
     for chunk, doc in rows:
         text = chunk.chunk_text or ""
-        vector_score = embeddings.cosine(query_vec, chunk.embedding)
         lex_score = embeddings.lexical_overlap(query, text)
-        score = 0.6 * max(0.0, vector_score) + 0.4 * lex_score
+        if vector_usable:
+            score = 0.6 * max(0.0, embeddings.cosine(query_vec, chunk.embedding)) + 0.4 * lex_score
+        else:
+            score = lex_score
         if score < min_score:
             continue
         hits.append(

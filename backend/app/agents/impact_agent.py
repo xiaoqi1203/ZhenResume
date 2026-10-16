@@ -49,7 +49,10 @@ class ImpactAgent(Agent):
             system=ctx.prompt("impact_agent"), user=user, mock_factory=mock_factory, agent=self.name
         )
 
-        llm_findings = coerce_findings(result.data.get("findings"), default_category="impact", ctx=ctx)
+        llm_findings = coerce_findings(
+            result.data.get("findings"), default_category="impact", ctx=ctx,
+            origin=("llm" if result.mode == "live" else "rule"),
+        )
         findings = merge_findings(llm_findings, baseline)
         ctx.add_findings(findings)
 

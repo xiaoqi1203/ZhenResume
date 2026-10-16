@@ -40,8 +40,34 @@ def _dedupe_key(item: dict) -> str:
     return f"{item.get('category')}|{basis}"
 
 
-def coerce_findings(raw: object, *, default_category: str, ctx: AgentContext, limit: int = MAX_FINDINGS) -> list[dict]:
-    """把任意形状的列表收敛为合规发现项。"""
+def _looks_like_keyword_gap(item: dict) -> bool:
+    """是否是「JD 关键词缺失」这一类发现项。"""
+    title = item.get("title") or ""
+    return "关键词" in title and ("缺失" in title or "未覆盖" in title or "缺少" in title)
+
+
+def _keyword_from_title(title: str, keywords: list[str]) -> str:
+    """从标题里找出对应的缺失关键词（用于校正引文）。
+
+    取**最长**匹配，避免用 `Java` 命中 `JavaScript` 这类父子串误判。
+    """
+    hits = [k for k in (keywords or []) if k and k in title]
+    return max(hits, key=len) if hits else ""
+
+
+def coerce_findings(
+    raw: object,
+    *,
+    default_category: str,
+    ctx: AgentContext,
+    limit: int = MAX_FINDINGS,
+    origin: str = "rule",
+) -> list[dict]:
+    """把任意形状的列表收敛为合规发现项。
+
+    `origin` 标记来源：`rule` = 规则层/确定性（mock 与降级链产出也算），`llm` = 模型产出。
+    **评分只认 rule**（见 `analyze.compute_scores`），否则同一份简历两次诊断分数会不同。
+    """
     if not isinstance(raw, list):
         return []
 
@@ -95,8 +121,24 @@ def coerce_findings(raw: object, *, default_category: str, ctx: AgentContext, li
             "issue": issue,
             "suggestion": suggestion,
             "rewritten_text": rewritten,
-            "evidence": resolve_evidence(ctx, quote, field),
+            "evidence": None,  # 下面统一构造
+            "origin": origin,
         }
+
+        # 模型自己"发明"的关键词缺失条目：引文经常被写成"已覆盖技能列表"
+        # （实测：标题是「缺失核心关键词 Java 及 Spring 生态」，引文却是
+        # 「Python、Go、MySQL、Redis、Kafka、Docker」）—— 违背"引文必须是关键词本身"
+        # 这条回归要求，也违背证据链只信原文的原则。
+        # 处理方式：**把引文校正为标题里对应的缺失关键词**（而不是丢掉整条 ——
+        # 丢掉会让"存在红色风险"这条验收断言在 live 下失败）；校正不了才丢弃。
+        if origin == "llm" and _looks_like_keyword_gap(item):
+            fixed = _keyword_from_title(title, ctx.missing_keywords)
+            if not fixed:
+                continue
+            quote = fixed
+            item["original_text"] = fixed
+
+        item["evidence"] = resolve_evidence(ctx, quote, field)
 
         key = _dedupe_key(item)
         if key in seen:

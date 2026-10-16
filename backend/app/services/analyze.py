@@ -11,9 +11,31 @@ live 模式下，各 Agent 会把这些候选交给 LLM 做判断与润色，但
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 
 from ..schemas import ParsedJd, ParsedResume
 from .evidence import build_evidence
+
+
+def now_utc() -> datetime:
+    """「当前时间」的唯一入口（时间线空窗、工作年限都依赖它）。
+
+    为什么要收口：直接调 `datetime.now()` 会让同一份简历**跨天复跑得到不同分数**
+    （12 月 31 日与 1 月 1 日算出的空窗/年限不同），而"两次诊断分数一致"是产品承诺。
+    测试里 monkeypatch 本函数即可验证跨天一致性。
+    """
+    return datetime.now(timezone.utc)
+
+
+# 评分只认「规则层（确定性）」发现项，见 compute_scores 的说明。
+RULE_ORIGIN = "rule"
+LLM_ORIGIN = "llm"
+
+
+def is_rule_origin(finding: dict) -> bool:
+    """没有 origin 标记的一律按规则层处理（历史数据与既有调用点向后兼容）。"""
+    return finding.get("origin", RULE_ORIGIN) == RULE_ORIGIN
+
 
 # --------------------------------------------------------------------------- #
 # 词表与正则
@@ -415,7 +437,7 @@ def timeline_gaps(parsed: ParsedResume, raw_text: str = "") -> list[dict]:
     from datetime import datetime, timezone
 
     out: list[dict] = []
-    now_ym = (datetime.now(timezone.utc).year, datetime.now(timezone.utc).month)
+    now_ym = (now_utc().year, now_utc().month)
 
     spans: list[tuple[int, int, str, str, str]] = []
     for kind, items in (("work", parsed.work), ("education", parsed.education)):
@@ -557,9 +579,7 @@ def gap_findings(parsed_resume: ParsedResume, parsed_jd: ParsedJd, raw_text: str
             if ym and (earliest is None or _months(ym) < _months(earliest)):
                 earliest = ym
         if earliest:
-            from datetime import datetime, timezone
-
-            now = datetime.now(timezone.utc)
+            now = now_utc()
             have_years = (now.year * 12 + now.month - _months(earliest)) / 12
             need = parsed_jd.experience_years
             if need and have_years + 0.5 < need:
@@ -638,7 +658,12 @@ def compute_scores(
        因此每个维度最多只计入 2 条发现项的扣分（按严重度取前 2），避免重复惩罚。
     2. **分数线主要看客观比率**（关键词覆盖率、量化比例），发现项只做温和修正。
        这样分数对"报告条数"不敏感，只对简历本身的质量敏感，二次诊断对比才有意义。
+    3. **只认规则层发现项（`origin != "llm"`）**：live 模式下 LLM 会自行增删发现项，
+       如果分数跟着变，同一份简历两次诊断就会得到不同分数 —— 实测已发生
+       （risk 78 ↔ 95），"改完再测对比分数"这个卖点会直接失真。
+       LLM 补充的条目照常展示在报告里，但不参与扣分。
     """
+    scored = [f for f in findings if is_rule_origin(f)]
     missing, covered = missing_keywords(parsed_resume, parsed_jd, raw_text)
     total_kw = len(missing) + len(covered)
     coverage = (len(covered) / total_kw) if total_kw else 0.85
@@ -646,17 +671,17 @@ def compute_scores(
     bullets = content_bullets(parsed_resume)
     quant_ratio = (len([t for _, t in bullets if _is_quantified(t)]) / len(bullets)) if bullets else 0.0
 
-    ats_score = _clamp(45 + coverage * 55 - _penalty(findings, "ats", red=5, yellow=2, cap=2))
-    impact_score = _clamp(40 + quant_ratio * 60 - _penalty(findings, "impact", red=5, yellow=2, cap=2))
-    clarity_score = _clamp(95 - _penalty(findings, "clarity", red=6, yellow=3, cap=2))
-    match_score = _clamp(45 + coverage * 55 - _penalty(findings, "gap", red=7, yellow=3, cap=2))
+    ats_score = _clamp(45 + coverage * 55 - _penalty(scored, "ats", red=5, yellow=2, cap=2))
+    impact_score = _clamp(40 + quant_ratio * 60 - _penalty(scored, "impact", red=5, yellow=2, cap=2))
+    clarity_score = _clamp(95 - _penalty(scored, "clarity", red=6, yellow=3, cap=2))
+    match_score = _clamp(45 + coverage * 55 - _penalty(scored, "gap", red=7, yellow=3, cap=2))
 
     # 风险维度不设上限：任何一条未处理的风险项都值得把安全度拉下来（重证据的产品定位）
     risk_score = _clamp(
         100
-        - 32 * len([f for f in findings if f["category"] == "risk" and f["severity"] == "red"])
-        - 22 * len([f for f in findings if f["category"] == "risk" and f["severity"] == "yellow"])
-        - 5 * len([f for f in findings if f["category"] == "risk" and f["severity"] == "green"])
+        - 32 * len([f for f in scored if f["category"] == "risk" and f["severity"] == "red"])
+        - 22 * len([f for f in scored if f["category"] == "risk" and f["severity"] == "yellow"])
+        - 5 * len([f for f in scored if f["category"] == "risk" and f["severity"] == "green"])
     )
 
     overall = _clamp(
@@ -671,6 +696,49 @@ def compute_scores(
         "match": match_score,
         "risk": risk_score,
     }
+
+
+def rule_baseline_findings(
+    parsed_resume: ParsedResume,
+    parsed_jd: ParsedJd,
+    role_family: str,
+    raw_text: str,
+    jd_text: str,
+) -> list[dict]:
+    """规则层基线发现项 —— **纯函数**，只依赖简历/JD 文本与解析结果。
+
+    为什么单独抽出来：**评分必须与 LLM 完全无关**。
+    live 模式下模型每次会增删条目，如果分数跟着变，"同一份简历两次诊断分数一致"
+    就不成立（实测：risk 78 ↔ 95、ats 62 ↔ 58）；HR 场景下更严重 ——
+    排名会随模型波动，无法向 HR 解释"为什么上周 A 第一这周 B 第一"。
+
+    所以职责切成两半：
+    - **展示**：走完整流水线（规则层 + LLM 补充 + 质检 + 筛选），丰富但每次可能略有不同；
+    - **评分**：只用本函数的输出，任何时候、任何模型、跨天复跑都完全一致。
+    """
+    out: list[dict] = []
+    out += ats_findings(parsed_resume, parsed_jd, raw_text, jd_text)
+    out += impact_findings(parsed_resume, role_family, raw_text)
+    out += risk_findings(parsed_resume, raw_text)
+    out += gap_findings(parsed_resume, parsed_jd, raw_text, jd_text)
+    out += clarity_findings(parsed_resume, raw_text)
+    return [dict(f, origin=RULE_ORIGIN) for f in out]
+
+
+def compute_scores_deterministic(
+    parsed_resume: ParsedResume,
+    parsed_jd: ParsedJd,
+    role_family: str,
+    raw_text: str,
+    jd_text: str,
+) -> dict[str, int]:
+    """报告定稿用的评分入口：只吃规则层基线，与 LLM 无关。"""
+    return compute_scores(
+        rule_baseline_findings(parsed_resume, parsed_jd, role_family, raw_text, jd_text),
+        parsed_resume,
+        parsed_jd,
+        raw_text,
+    )
 
 
 def _penalty(findings: list[dict], category: str, *, red: int, yellow: int, cap: int = 2) -> int:

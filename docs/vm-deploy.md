@@ -138,14 +138,38 @@ ls -l ~/ZhenResume/backend/.env
 
 ```bash
 cat > ~/ZhenResume/backend/.env <<'EOF'
-# LLM：留空 = mock 模式（规则引擎，全链路可用）；填 Key 则切真实模型
-DEEPSEEK_API_KEY=
+# ---- LLM：多供应商降级链（按顺序尝试；全部失败才回落到规则引擎）----
+LLM_PROVIDERS=aliyun,deepseek
+
+# 第一层：阿里云百炼（DashScope）OpenAI 兼容端点
+ALIYUN_API_KEY=sk-xxxx
+ALIYUN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+ALIYUN_MODEL=qwen3.8-max
+ALIYUN_MODEL_FALLBACKS=deepseek-v4-pro-0813,qwen3.7-flash,qwen3.7-flash-2026-07-15
+
+# 第二层：DeepSeek 兜底
+DEEPSEEK_API_KEY=sk-xxxx
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+LLM_MODEL=deepseek-flash
 
 # 把 <VM_IP> 换成 `hostname -I` 的结果
 FRONTEND_BASE_URL=http://<VM_IP>:3000
 CORS_ORIGINS=http://127.0.0.1:3000,http://localhost:3000,http://<VM_IP>:3000
 EOF
 ```
+
+> ⚠️ **同步前先合并，别直接覆盖**：PyCharm Deployment 会把宿主机那份 `backend/.env`
+> 整个推到 VM。如果 VM 上已经改过 `CORS_ORIGINS` / `FRONTEND_BASE_URL`，
+> 直接同步会把它们冲掉（症状是前端页面突然报 CORS 错误）。
+> 稳妥做法：把 VM 需要的来源也写进宿主机那份 `.env`（两边都列上，多一个允许来源无副作用），
+> 然后随便哪边同步都一致。
+>
+> 配好后用体检脚本确认链通了（在 VM 的 `backend` 目录下）：
+>
+> ```bash
+> ./.venv/bin/python -m scripts.probe_llm --embeddings
+> curl -s http://127.0.0.1:8000/api/v1/health   # 看 llm_chain 是否就是你配的 5 个模型
+> ```
 
 ### 为什么只写这几项
 

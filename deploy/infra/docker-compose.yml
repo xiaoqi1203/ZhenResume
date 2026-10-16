@@ -1,0 +1,193 @@
+# ZhenResume 中间件（PostgreSQL + Redis）与可选的应用容器
+#
+# 两种用法，按需选：
+#   A) 只把中间件放 Docker（应用仍跑在宿主机，PyCharm 工作流不变）—— 推荐先用这个
+#      docker compose -f deploy/infra/docker-compose.yml up -d db redis
+#      应用侧 .env 用：127.0.0.1:5432 / 127.0.0.1:6379（端口已发布到宿主机）
+#
+#   B) 连应用一起容器化（api + worker + db + redis）
+#      docker compose -f deploy/infra/docker-compose.yml --profile app up -d --build
+#      应用侧 .env 用服务名：db:5432 / redis:6379
+#
+# 注意：这是**独立于仓库根目录那份 docker-compose.yml** 的一套（那份是前后端 dev compose），
+# 项目名不同，卷与网络也不共用，互不影响。
+
+name: zhenresume-infra
+
+services:
+  db:
+    # 用 pgvector 官方镜像：以后知识库要上 pgvector 时不用换镜像，只 CREATE EXTENSION
+    image: pgvector/pgvector:pg16
+    container_name: zhenresume-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-zhenresume}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 deploy/infra/.env 里设置强密码}
+      POSTGRES_DB: ${POSTGRES_DB:-zhenresume}
+      # 中文排序与大小写：按需要可加，默认 C 排序对英文关键词更可预测
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    # 只绑定回环地址：中间件不需要对局域网开放
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - zhenresume-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-zhenresume} -d ${POSTGRES_DB:-zhenresume}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    # 并发写是这次上 PG 的唯一目的，给足连接数
+    command: >
+      postgres
+      -c max_connections=200
+      -c shared_buffers=512MB
+      -c work_mem=8MB
+      -c maintenance_work_mem=128MB
+      -c effective_cache_size=2GB
+
+  redis:
+    image: redis:7-alpine
+    container_name: zhenresume-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD:?请在 deploy/infra/.env 里设置强密码}
+      --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - zhenresume-redisdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+
+  # ---------------- 以下两个只在 --profile app 时启动 ----------------
+  api:
+    profiles: ["app"]
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+      args:
+        # ⚠️ 必须传镜像源：默认走 files.pythonhosted.org，在国内实测只有 37–74 kB/s，
+        # psycopg-binary(5.2MB) 会直接读超时导致构建失败。
+        # Dockerfile 已声明 ARG PIP_INDEX_URL / PIP_TRUSTED_HOST，传了就走镜像源。
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
+        # 离线兜底：先在宿主机 `pip download -d backend/wheels`，再传 PIP_FIND_LINKS=wheels
+        PIP_FIND_LINKS: ${PIP_FIND_LINKS:-}
+    container_name: zhenresume-api
+    restart: unless-stopped
+    init: true
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    # 直接复用宿主机那份 backend/.env（LLM Key、embedding 配置都在里面），
+    # 再用 environment 覆盖"容器内必须改成服务名"的几项 —— Compose 里 environment
+    # 的优先级高于 env_file，所以**不需要再维护第二份 .env.app**。
+    env_file:
+      - ../../backend/.env
+    environment:
+      PYTHONUTF8: "1"
+      # 上传目录必须指向共享卷，否则容器里会去找宿主机的路径：
+      # api 与 worker 共享 zhenresume-appdata:/app/data，两边看到的是同一份文件
+      UPLOAD_DIR: /app/data/uploads
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-zhenresume}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-zhenresume}
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/2
+      WORKFLOW_EXECUTOR: celery
+      WORKFLOW_ENGINE: langgraph
+      WORKFLOW_PARALLEL: "true"
+      HR_SCREENING: "true"
+      HR_BATCH_CONCURRENCY: "50"
+      # 容器内要连宿主机的 Ollama（embedding 回退层）：用 host-gateway
+      EMBEDDING_FALLBACK_BASE_URL: ${EMBEDDING_FALLBACK_BASE_URL:-http://host.docker.internal:11434/v1}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      # ⚠️ api 与 worker **必须共享**这个卷：上传的简历文件在它里面
+      - zhenresume-appdata:/app/data
+    command: ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  worker:
+    profiles: ["app"]
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+      args:
+        # 同 api：走清华镜像源，否则依赖下载会超时
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
+        # 离线兜底：先在宿主机 `pip download -d backend/wheels`，再传 PIP_FIND_LINKS=wheels
+        PIP_FIND_LINKS: ${PIP_FIND_LINKS:-}
+    image: zhenresume-infra-worker
+    container_name: zhenresume-worker
+    restart: unless-stopped
+    init: true
+    # ⚠️ worker 继承了 Dockerfile 里的 HEALTHCHECK（那个是探 API 的 /api/v1/health），
+    # 而 worker 不提供 HTTP 服务 —— 不关掉的话它会永远显示 unhealthy，误导排查与编排。
+    healthcheck:
+      disable: true
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    env_file:
+      - ../../backend/.env
+    environment:
+      PYTHONUTF8: "1"
+      # 上传目录必须指向共享卷，否则容器里会去找宿主机的路径：
+      # api 与 worker 共享 zhenresume-appdata:/app/data，两边看到的是同一份文件
+      UPLOAD_DIR: /app/data/uploads
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-zhenresume}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-zhenresume}
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/2
+      WORKFLOW_EXECUTOR: celery
+      WORKFLOW_ENGINE: langgraph
+      WORKFLOW_PARALLEL: "true"
+      HR_SCREENING: "true"
+      HR_BATCH_CONCURRENCY: "50"
+      EMBEDDING_FALLBACK_BASE_URL: ${EMBEDDING_FALLBACK_BASE_URL:-http://host.docker.internal:11434/v1}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - zhenresume-appdata:/app/data
+    # 一个 Celery 任务 = 一份诊断或整个 HR 批次；批内自己用 asyncio 并发
+    command: ["celery", "-A", "app.worker", "worker", "-l", "INFO", "-Q", "default", "--concurrency=4"]
+
+  # ---------------- 前端：只在 --profile web 时启动 ----------------
+  # 为什么单独一个 profile：Next 的 NEXT_PUBLIC_* 是**构建期内联**的，必须用 build.args
+  # 传"浏览器能访问到"的地址（不能用 api/db 服务名，那是容器内部地址）。
+  # 开发期建议继续在 Windows 上 `npm run dev`（改代码即时热更新）；
+  # 这个容器用于"演示/部署时一条命令全套起来"。
+  frontend:
+    profiles: ["web"]
+    build:
+      context: ../../frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE: ${PUBLIC_API_BASE:-http://192.168.10.128:8000}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+    image: zhenresume-frontend:1.0.0
+    container_name: zhenresume-frontend
+    restart: unless-stopped
+    init: true
+    depends_on:
+      - api
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+
+volumes:
+  zhenresume-pgdata:
+    name: zhenresume-pgdata
+  zhenresume-redisdata:
+    name: zhenresume-redisdata
+  zhenresume-appdata:
+    name: zhenresume-appdata

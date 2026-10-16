@@ -21,11 +21,16 @@ FROM python:3.12-slim
 # 内网/镜像源场景可在构建时覆盖：--build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 ARG PIP_INDEX_URL=""
 ARG PIP_TRUSTED_HOST=""
+# 离线 wheel 兜底：把 `pip download` 下好的 wheel 放进构建上下文（backend/wheels/），
+# 传 PIP_FIND_LINKS=wheels 即可完全不走网络 —— 国内构建最稳的一条路。
+ARG PIP_FIND_LINKS=""
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DEFAULT_TIMEOUT=120 \
+    PIP_RETRIES=10
 
 WORKDIR /app
 
@@ -37,8 +42,13 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
+# wheels/ 恒存在（带 .gitkeep），里面可放 `pip download` 下好的离线包：
+# 传 PIP_FIND_LINKS=wheels 就完全不走网络，国内构建最稳。
+COPY wheels ./wheels/
 RUN set -eux; \
-    if [ -n "$PIP_INDEX_URL" ]; then \
+    if [ -n "$PIP_FIND_LINKS" ]; then \
+        pip install --no-index --find-links "$PIP_FIND_LINKS" -r requirements.txt; \
+    elif [ -n "$PIP_INDEX_URL" ]; then \
         pip install --index-url "$PIP_INDEX_URL" ${PIP_TRUSTED_HOST:+--trusted-host "$PIP_TRUSTED_HOST"} -r requirements.txt; \
     else \
         pip install -r requirements.txt; \

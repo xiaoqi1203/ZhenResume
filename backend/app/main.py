@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -33,10 +34,34 @@ async def lifespan(_app: FastAPI):
 
     if settings.llm_mode == "mock":
         logger.warning(
-            "未配置 DEEPSEEK_API_KEY，当前为 mock 模式：报告由规则引擎生成。"
-            "配置 Key 后重启即可切换到真实模型。"
+            "未配置任何 LLM Key（ALIYUN_API_KEY / DEEPSEEK_API_KEY），当前为 mock 模式："
+            "报告由规则引擎生成。配置 Key 后重启即可切换到真实模型。"
         )
+    else:
+        logger.info(
+            "LLM 降级链（按序尝试）：%s", " → ".join(settings.llm_chain_summary)
+        )
+    logger.info(
+        "工作流引擎：%s（并行=%s，checkpoint=%s）",
+        settings.workflow_engine,
+        settings.workflow_parallel,
+        settings.langgraph_checkpoint,
+    )
+    if settings.workflow_engine == "langgraph" and settings.langgraph_checkpoint != "off":
+        # 服务重启后把卡在 running 的任务从断点续跑（同一 thread_id，已完成节点不重跑）
+        asyncio.create_task(_resume_zombies_safe())
     yield
+
+
+async def _resume_zombies_safe() -> None:
+    try:
+        from .workflow.graph import resume_zombies
+
+        recovered = await resume_zombies()
+        if recovered:
+            logger.warning("已回收 %s 个僵尸任务", recovered)
+    except Exception:  # noqa: BLE001
+        logger.exception("僵尸任务回收失败（不影响服务启动）")
 
 
 app = FastAPI(

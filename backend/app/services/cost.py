@@ -21,10 +21,19 @@ def estimate_tokens(text: str) -> int:
     return int(cjk + other / 4) + 1
 
 
-def compute_cost(tokens_in: int, tokens_out: int) -> float:
-    """按配置单价折算人民币，保留 4 位小数以对齐 workflow_steps.cost NUMERIC(10,4)。"""
-    cost = (
-        tokens_in / 1_000_000 * settings.llm_price_input_per_m
-        + tokens_out / 1_000_000 * settings.llm_price_output_per_m
-    )
+def compute_cost(
+    tokens_in: int,
+    tokens_out: int,
+    *,
+    price_in: float | None = None,
+    price_out: float | None = None,
+) -> float:
+    """按单价折算人民币，保留 4 位小数以对齐 workflow_steps.cost NUMERIC(10,4)。
+
+    单价默认取全局配置；多供应商链传入**该供应商自己的单价**，
+    否则"单份成本 ≤ 0.5 元"的看板会把不同模型的价差算错。
+    """
+    p_in = settings.llm_price_input_per_m if price_in is None else price_in
+    p_out = settings.llm_price_output_per_m if price_out is None else price_out
+    cost = tokens_in / 1_000_000 * p_in + tokens_out / 1_000_000 * p_out
     return round(cost, 4)

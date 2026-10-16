@@ -8,3 +8,18 @@ httpx==0.28.1
 pypdf==5.1.0
 python-docx==1.1.2
 Pillow==11.1.0
+
+# ---- 工作流编排（LangGraph 1.2，MIT）----
+# 只用 OSS 库自己嵌 FastAPI：**不装** langgraph-cli / Agent Server
+# （langgraph-api 是 Elastic-2.0，生产需 license key + 外联 beacon）
+langgraph==1.2.15
+langgraph-checkpoint-sqlite==3.1.2
+# 生产切 PostgreSQL checkpointer 时再启用（依赖 psycopg3，不是 asyncpg）：
+# langgraph-checkpoint-postgres==3.2.0
+# psycopg[binary]==3.2.3
+
+# ---- 执行模型：Celery + Redis（生产；把工作流执行从 web 进程搬出去）----
+celery[redis]==5.6.3
+redis==5.3.1
+# PostgreSQL 驱动（SQLAlchemy 用 psycopg3 方言：postgresql+psycopg://）
+psycopg[binary]==3.3.6

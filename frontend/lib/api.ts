@@ -326,6 +326,130 @@ export function listTasks(params?: PaginationParams): Promise<TaskListResponse> 
   return request<TaskListResponse>(withPagination(`${API_PREFIX}/tasks`, params));
 }
 
+/**
+ * 任务进度流（契约 §4.4）。
+ *
+ * 为什么用 `fetch` + ReadableStream 而不是 `EventSource`：
+ * 后端按 `X-Device-Id` 请求头鉴权，而 `EventSource` **不支持自定义请求头**。
+ *
+ * 为什么必须保留 `buf` 跨 chunk：一个 SSE 帧可能被 TCP 拆成两次 `read()`，
+ * 逐 chunk 直接 `JSON.parse` 会偶发失败（手写 SSE 解析最常见的坑）。
+ *
+ * @returns 取消函数（组件卸载/重试时调用，内部走 AbortController）
+ */
+export function streamTask(
+  taskId: string,
+  handlers: {
+    onEvent: (event: string, data: Record<string, unknown>) => void;
+    onError: (error: unknown) => void;
+    /** 流结束（服务端发完 done/error 后关闭，或对端关闭连接） */
+    onClose: () => void;
+  },
+): () => void {
+  const controller = new AbortController();
+  const headers: Record<string, string> = { Accept: 'text/event-stream' };
+  const deviceId = getDeviceId();
+  if (deviceId) headers['X-Device-Id'] = deviceId;
+
+  void (async () => {
+    try {
+      const res = await fetch(apiUrl(`${API_PREFIX}/tasks/${taskId}/stream`), {
+        headers,
+        signal: controller.signal,
+      });
+      if (!res.ok || !res.body) {
+        throw new Error(`流式连接失败（HTTP ${res.status}）`);
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const frames = buf.split('\n\n');
+        buf = frames.pop() ?? '';
+        for (const frame of frames) {
+          const event = /^event: (.+)$/m.exec(frame)?.[1];
+          const raw = /^data: (.+)$/m.exec(frame)?.[1];
+          // 心跳是 `: ping` 注释行，没有 event/data，跳过
+          if (!event || raw === undefined) continue;
+          try {
+            handlers.onEvent(event, JSON.parse(raw) as Record<string, unknown>);
+          } catch {
+            // 单帧解析失败不该拖垮整条流
+          }
+        }
+      }
+      handlers.onClose();
+    } catch (err) {
+      if ((err as Error)?.name === 'AbortError') return;
+      handlers.onError(err);
+    }
+  })();
+
+  return () => controller.abort();
+}
+
+/**
+ * HR 批次进度流（契约 §6.5）。
+ *
+ * 与 `streamTask` 的解析逻辑相同（同一个 SSE 帧格式、同样跨 chunk 保留 buffer），
+ * 只是 URL 不同。**故意保持独立实现**：`streamTask` 已在 VM 上验证通过，
+ * 抽公共函数要连带回归两条路径，等下一轮重构时再合并。
+ */
+export function streamBatch(
+  batchId: string,
+  handlers: {
+    onEvent: (event: string, data: Record<string, unknown>) => void;
+    onError: (error: unknown) => void;
+    onClose: () => void;
+  },
+): () => void {
+  const controller = new AbortController();
+  const headers: Record<string, string> = { Accept: 'text/event-stream' };
+  const deviceId = getDeviceId();
+  if (deviceId) headers['X-Device-Id'] = deviceId;
+
+  void (async () => {
+    try {
+      const res = await fetch(apiUrl(`${API_PREFIX}/hr/batches/${batchId}/stream`), {
+        headers,
+        signal: controller.signal,
+      });
+      if (!res.ok || !res.body) {
+        throw new Error(`流式连接失败（HTTP ${res.status}）`);
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const frames = buf.split('\n\n');
+        buf = frames.pop() ?? '';
+        for (const frame of frames) {
+          const event = /^event: (.+)$/m.exec(frame)?.[1];
+          const raw = /^data: (.+)$/m.exec(frame)?.[1];
+          if (!event || raw === undefined) continue;
+          try {
+            handlers.onEvent(event, JSON.parse(raw) as Record<string, unknown>);
+          } catch {
+            // 单帧坏了不该拖垮整条流
+          }
+        }
+      }
+      handlers.onClose();
+    } catch (err) {
+      if ((err as Error)?.name === 'AbortError') return;
+      handlers.onError(err);
+    }
+  })();
+
+  return () => controller.abort();
+}
+
 /* ------------------------------------------------------------------ */
 /* §5 报告                                                             */
 /* ------------------------------------------------------------------ */

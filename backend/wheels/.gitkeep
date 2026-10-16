@@ -1,0 +1,12 @@
+# 这个目录用来放离线 wheel（`pip download` 的产物），让 Docker 构建完全不依赖 PyPI 网络。
+#
+# 用法（在 VM 上，宿主机 pip 能通的时候）：
+#   cd ~/ZhenResume/backend
+#   mkdir -p wheels
+#   ./.venv/bin/pip download -r requirements.txt -d wheels -i https://pypi.tuna.tsinghua.edu.cn/simple
+#   cd ~/ZhenResume && PIP_FIND_LINKS=wheels bash deploy/infra/restart.sh
+#
+# 为什么需要：容器内访问 pypi.tuna 会返回空索引（DNS 被劫持/代理拦截的典型症状），
+# 而宿主机 pip 用同一个源是通的 —— 所以先在宿主机把包下好，构建时 --no-index 离线装。
+#
+# 这个 .gitkeep 保证目录始终存在，Dockerfile 里的 `COPY wheels ./wheels/` 才不需要条件判断。

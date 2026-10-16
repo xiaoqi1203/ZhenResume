@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from ..agents import AGENT_PIPELINE
 from ..agents.base import AgentContext
 from ..agents.report_agent import DISCLAIMER
+from ..config import settings
 from ..db import session_scope
 from ..models import AnalysisReport, AnalysisTask, JobDescription, ReportFinding, Resume, WorkflowStep
 from ..schemas import ParsedJd, ParsedResume
@@ -38,9 +39,32 @@ TOTAL_STEPS = len(AGENT_PIPELINE)
 def launch_workflow(task_id: str) -> None:
     """后台任务入口（供 FastAPI BackgroundTasks 调用）。异常全部吞掉并落到任务状态里。"""
     try:
-        asyncio.run(run_workflow(task_id))
-    except Exception:  # noqa: BLE001 —— 后台任务不能再往外抛，否则会静默丢失
+        asyncio.run(run_analysis(task_id))
+    except Exception:  # noqa: BLE001 后台任务不能再往外抛，否则会静默丢失 ——
         traceback.print_exc()
+        try:  # 兜底：不留 running 僵尸（LangGraph 路径自己会置 failed，legacy 也要保证）
+            from .steps import fail_task
+
+            fail_task(task_id, "工作流异常终止")
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def run_analysis(task_id: str) -> str | None:
+    """按 `WORKFLOW_ENGINE` 分派：langgraph = 图编排；legacy = 本文件的手写状态机。
+
+    两者共用同一批 `services/*` 与 `agents/*`，所以切换只改变"谁来编排"，
+    不改变业务语义（分数、发现项、证据链、成本口径完全一致）。
+
+    LangGraph 路径还会按**任务类型**自动选图（见 graph.run_graph 的 mode="auto"）：
+    - `type=batch`（HR 批量初筛）→ **HR 排序表轻量图**（parse + jd_match + risk）；
+    - 其它（求职者单份诊断）→ 完整 8 节点流水线（详细分析保留）。
+    """
+    if settings.workflow_engine == "langgraph":
+        from .graph import run_graph
+
+        return await run_graph(task_id, mode="auto")
+    return await run_workflow(task_id)
 
 
 async def run_workflow(task_id: str) -> str | None:
@@ -114,8 +138,12 @@ async def run_workflow(task_id: str) -> str | None:
             db.flush()
 
             if agent.name == "qc":
-                # QC 会改动 findings，必须在它之后再定稿分数，保证总分与问题清单一致
-                ctx.scores = analyze.compute_scores(ctx.findings, ctx.parsed_resume, ctx.parsed_jd, ctx.resume_text)
+                # QC 会改动 findings，必须在它之后再定稿分数，保证总分与问题清单一致。
+                # 注意用 compute_scores_deterministic：分数只由规则层基线决定，
+                # 与 LLM 每次的增删无关 —— 否则同一份简历两次诊断分数会不同（实测已发生）。
+                ctx.scores = analyze.compute_scores_deterministic(
+                    ctx.parsed_resume, ctx.parsed_jd, ctx.role_family, ctx.resume_text, ctx.jd_text
+                )
                 report = _persist_report(db, task, ctx)
                 report_id = report.id
 

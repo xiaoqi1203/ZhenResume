@@ -4,16 +4,13 @@ import * as React from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { ArrowLeft, Clock, Loader2 } from 'lucide-react';
-import { ApiError, getTask } from '@/lib/api';
-import type { TaskStatusResponse } from '@/lib/types';
-import { Button } from '@/components/ui/button';
 import { buttonVariants } from '@/lib/button-variants';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { StepTimeline } from '@/components/step-timeline';
 import { ErrorBanner, LoadingBlock } from '@/components/states';
-
-const POLL_INTERVAL_MS = 1500;
+import { useTaskFeed } from '@/lib/use-task-feed';
 
 const STATUS_TEXT: Record<string, string> = {
   pending: '任务排队中',
@@ -22,77 +19,28 @@ const STATUS_TEXT: Record<string, string> = {
   failed: '诊断失败',
 };
 
-function describeError(error: unknown): string {
-  if (error instanceof ApiError) return error.message;
-  if (error instanceof Error) return error.message;
-  return '发生未知错误，请稍后重试';
-}
+/** 实时通道状态提示（业务状态，不是装饰） */
+const FEED_MODE_TEXT: Record<string, string> = {
+  connecting: '正在建立实时通道…',
+  stream: '实时推送中',
+  polling: '已回落到轮询（1.5s）',
+};
 
 export default function AnalyzePage() {
   const router = useRouter();
   const params = useParams<{ taskId: string }>();
   const taskId = typeof params?.taskId === 'string' ? params.taskId : '';
 
-  const [task, setTask] = React.useState<TaskStatusResponse | null>(null);
-  const [error, setError] = React.useState<string | null>(null);
-  const [loading, setLoading] = React.useState(true);
   const [retryToken, setRetryToken] = React.useState(0);
-
   const redirectedRef = React.useRef(false);
 
-  React.useEffect(() => {
-    if (!taskId) {
-      setLoading(false);
-      setError('缺少任务 ID，请返回首页重新发起诊断。');
-      return;
+  // 默认走 SSE 实时推送；失败自动回落到 1.5s 轮询（逻辑都在 hook 里，与样式无关）
+  const { task, error, loading, mode } = useTaskFeed(taskId, retryToken, (finished) => {
+    if (finished.report_id && !redirectedRef.current) {
+      redirectedRef.current = true;
+      router.replace(`/report/${finished.report_id}`);
     }
-
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-
-    const clearTimer = () => {
-      if (timer) {
-        clearTimeout(timer);
-        timer = null;
-      }
-    };
-
-    const poll = async () => {
-      try {
-        const data = await getTask(taskId);
-        if (cancelled) return;
-        setTask(data);
-        setLoading(false);
-        setError(null);
-
-        if (data.status === 'done' && data.report_id) {
-          if (!redirectedRef.current) {
-            redirectedRef.current = true;
-            router.replace(`/report/${data.report_id}`);
-          }
-          return;
-        }
-        if (data.status === 'failed') {
-          return;
-        }
-      } catch (err) {
-        if (cancelled) return;
-        setLoading(false);
-        setError(describeError(err));
-      }
-
-      if (!cancelled) {
-        timer = setTimeout(poll, POLL_INTERVAL_MS);
-      }
-    };
-
-    void poll();
-
-    return () => {
-      cancelled = true;
-      clearTimer();
-    };
-  }, [taskId, retryToken, router]);
+  });
 
   const status = task?.status ?? 'pending';
   const running = status === 'pending' || status === 'running';
@@ -109,7 +57,11 @@ export default function AnalyzePage() {
           <ArrowLeft className="h-3.5 w-3.5" aria-hidden />
           返回首页
         </Link>
-        <span className="font-mono text-xs text-slate-400">任务 ID：{taskId || '—'}</span>
+        <span className="flex items-center gap-2 font-mono text-xs text-slate-400">
+          <span>{FEED_MODE_TEXT[mode]}</span>
+          <span aria-hidden>·</span>
+          <span>任务 ID：{taskId || '—'}</span>
+        </span>
       </div>
 
       <div className="flex items-start gap-2 rounded-lg border border-brand-100 bg-brand-50/60 px-4 py-3 text-sm text-brand-900">
@@ -135,7 +87,7 @@ export default function AnalyzePage() {
               <Button
                 variant="outline"
                 onClick={() => {
-                  setError(null);
+                  // 重新建立实时通道（失败会自动回落轮询）；错误态由 hook 内部重置
                   setRetryToken((n) => n + 1);
                 }}
               >

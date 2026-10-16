@@ -1,8 +1,15 @@
-"""分析任务接口（契约 §4）—— 工作流的入口与轮询出口。"""
+"""分析任务接口（契约 §4）—— 工作流的入口、轮询出口与 SSE 流。"""
 
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
+import time
+from collections.abc import AsyncIterator
+
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -11,11 +18,18 @@ from ..db import get_db
 from ..errors import JdNotFound, QuotaExceeded, ResumeNotFound, TaskNotFound
 from ..models import AnalysisReport, AnalysisTask, JobDescription, Payment, Resume, User
 from ..schemas import TaskCreate
+from ..queue import enqueue_analysis
 from ..serializers import serialize_task, serialize_task_summary
 from ..workflow import launch_workflow
 from .deps import get_current_user
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/tasks", tags=["tasks"])
+
+STREAM_POLL_S = 0.5          # 服务端轮询间隔
+STREAM_HEARTBEAT_POLLS = 20  # 每 20 次（~10s）发一个心跳注释行，防代理断连
+STREAM_MAX_S = 900           # 硬上限，避免连接泄漏
 
 
 def _has_paid_access(db: Session, user: User) -> bool:
@@ -57,8 +71,9 @@ def create_task(
     db.commit()
     db.refresh(task)
 
-    # 异步执行：Starlette 会 await 这个 async 函数，请求立即返回 202
-    background_tasks.add_task(launch_workflow, task.id)
+    # 异步执行：Starlette 会 await 这个 async 函数，请求立即返回 202。
+    # 具体走 BackgroundTasks 还是 Celery，由 WORKFLOW_EXECUTOR 决定（见 app/queue.py）
+    enqueue_analysis(task.id, background_tasks)
 
     return {"task_id": task.id, "status": task.status}
 
@@ -94,3 +109,125 @@ def get_task(
 
     report_id = db.execute(select(AnalysisReport.id).where(AnalysisReport.task_id == task.id)).scalar_one_or_none()
     return serialize_task(task, steps=list(task.steps), report_id=report_id)
+
+
+# --------------------------------------------------------------------------- #
+# 契约 §4.4：SSE 流式任务进度
+# --------------------------------------------------------------------------- #
+def _sse(event: str, data: dict) -> str:
+    """SSE 帧。data 必须是单行 JSON —— 多行会被 SSE 规范拆坏。"""
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _snapshot(task_id: str) -> dict | None:
+    """读一次任务快照（在**独立线程**里用独立 session，绝不跨 await 持会话）。
+
+    Celery 模式下任务跑在别的进程，所以只能用 DB 状态作为唯一真源。
+    """
+    from ..db import session_scope
+
+    with session_scope() as db:
+        task = db.get(AnalysisTask, task_id)
+        if task is None:
+            return None
+        report_id = db.execute(
+            select(AnalysisReport.id).where(AnalysisReport.task_id == task.id)
+        ).scalar_one_or_none()
+        return serialize_task(task, steps=list(task.steps), report_id=report_id)
+
+
+async def _event_stream(task_id: str) -> AsyncIterator[str]:
+    """把任务状态变化翻译成 SSE 事件。
+
+    事件模型（契约 §4.4）：
+      step_done   某个步骤从 pending → done/degraded（前端可立即渲染这一段结论）
+      progress    进度/当前步骤/状态发生变化
+      done        任务完成，data 是完整任务详情（与 4.2 同构）→ 服务端随后关闭
+      error       任务失败
+      : ping      心跳注释行（不产生事件，只为防代理/浏览器断连）
+    """
+    started = time.monotonic()
+    sent_steps: set[str] = set()
+    last_fingerprint: tuple | None = None
+    polls = 0
+
+    while True:
+        if time.monotonic() - started > STREAM_MAX_S:
+            yield _sse("error", {"message": f"流式连接超过 {STREAM_MAX_S}s 上限，已关闭；请用 4.2 轮询续取"})
+            return
+
+        snapshot = await asyncio.to_thread(_snapshot, task_id)
+        if snapshot is None:
+            yield _sse("error", {"message": "任务不存在"})
+            return
+
+        # 1) 已完成的步骤逐个推送（不重复推）
+        for step in snapshot.get("steps") or []:
+            name = step.get("step_name")
+            if name in sent_steps or step.get("status") == "pending":
+                continue
+            sent_steps.add(name)
+            yield _sse("step_done", step)
+
+        # 2) 进度变化
+        fingerprint = (
+            snapshot.get("status"),
+            snapshot.get("current_step"),
+            round(float(snapshot.get("progress") or 0), 3),
+        )
+        if fingerprint != last_fingerprint:
+            last_fingerprint = fingerprint
+            yield _sse(
+                "progress",
+                {
+                    "task_id": task_id,
+                    "status": snapshot.get("status"),
+                    "progress": snapshot.get("progress"),
+                    "current_step": snapshot.get("current_step"),
+                    "total_steps": snapshot.get("total_steps"),
+                },
+            )
+
+        # 3) 终态：把完整结果一并给出，然后关闭（前端不必再调 4.2）
+        status = snapshot.get("status")
+        if status == "done":
+            yield _sse("done", snapshot)
+            return
+        if status == "failed":
+            yield _sse("error", {"message": snapshot.get("error") or "任务失败", "task_id": task_id})
+            return
+
+        polls += 1
+        if polls % STREAM_HEARTBEAT_POLLS == 0:
+            yield ": ping\n\n"
+        await asyncio.sleep(STREAM_POLL_S)
+
+
+@router.get("/{task_id}/stream")
+def stream_task(
+    task_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> StreamingResponse:
+    """SSE 流式任务进度（契约 §4.4）。
+
+    ⚠️ 客户端**必须用 `fetch()` + ReadableStream 读取，不能用 `EventSource`**：
+    身份靠请求头（`X-Device-Id`），而 `EventSource` 不支持自定义请求头。
+    这也是为什么这里不做 `?device_id=` 的查询参数兜底 ——
+    凭证出现在 URL 里会被写进访问日志，属于无谓的泄漏面。
+
+    保留 §4.2 轮询接口不变：老客户端与"断线续取"都继续可用。
+    """
+    task = db.get(AnalysisTask, task_id)
+    if task is None or task.user_id != user.id:
+        raise TaskNotFound()
+    return StreamingResponse(
+        _event_stream(task_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            # Nginx 默认会缓冲响应，必须显式关掉，否则前端收不到增量（只在整条流结束时才收到）
+            "X-Accel-Buffering": "no",
+        },
+    )

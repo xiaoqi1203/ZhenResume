@@ -40,12 +40,17 @@
   "status": "ok",
   "version": "1.0.0",
   "llm_mode": "live",
-  "llm_provider": "deepseek",
-  "llm_model": "deepseek-chat"
+  "llm_provider": "aliyun",
+  "llm_model": "qwen3.8-max",
+  "llm_chain": ["aliyun:qwen3.8-max", "aliyun:qwen3.7-flash", "deepseek:deepseek-flash"]
 }
 ```
 
-`llm_mode` ∈ `live` | `mock`。未配置 `DEEPSEEK_API_KEY` 时后端自动进入 `mock`，全链路仍可跑通。
+`llm_mode` ∈ `live` | `mock`。**未配置任何 LLM Key**（`ALIYUN_API_KEY` / `DEEPSEEK_API_KEY`）时后端自动进入 `mock`，全链路仍可跑通。
+
+- `llm_provider` / `llm_model`：当前生效的**第一层**（`llm_mode=mock` 时为 `mock` / `mock-rule-engine`）。
+- `llm_chain`（**v1.1 新增，向前兼容**）：按顺序尝试的完整降级链，`供应商:模型`。同一供应商内按模型阶梯降级，供应商之间按 `LLM_PROVIDERS` 顺序降级；全部失败才回落到各 Agent 的规则引擎实现（对应步骤标记 `degraded`）。
+- `embedding_provider` / `embedding_model` / `embedding_dim`（**v1.1 新增，向前兼容**）：当前检索向量来源。`provider=hash` 时 `embedding_model` 为 `local-hash`（本地确定性哈希向量）。**这三项与知识库中已存的向量必须一致**，否则检索恒为 0 分（`cosine()` 对长度不一致的向量返回 0）。
 
 ---
 
@@ -249,6 +254,63 @@
 
 ---
 
+### 4.4 任务进度流（SSE，推荐；4.2 轮询仍然保留）
+
+`GET /api/v1/tasks/{task_id}/stream` → `text/event-stream`
+
+**为什么加**：一份求职者完整报告实测约 47.5s（优化后），前端 1.5s 轮询在这段时间里
+只能显示"进行中"，用户什么都看不到。SSE 让每个步骤一完成就推送，解析完（约 13s）
+用户就能看到第一批结论。
+
+**契约要点**
+
+| 项 | 约定 |
+|---|---|
+| 认证 | 同其它接口（`X-Device-Id` 请求头） |
+| 客户端 | ⚠️ **必须用 `fetch()` + `ReadableStream` 读取，不能用 `EventSource`** —— `EventSource` 无法自定义请求头 |
+| 归属校验 | 非本人任务返回 `TASK_NOT_FOUND`（与 4.2 一致，不区分"不存在"和"不是你的"） |
+| 心跳 | 每约 10s 一行 `: ping`（注释行，不产生事件），用于防代理断连 |
+| 服务端轮询 | 500ms 一次读 DB（Celery 模式下任务在别的进程，进程内事件拿不到，只能以 DB 为唯一真源） |
+| 上限 | 900s 后主动发 `error` 并关闭（避免连接泄漏）；此时前端应回落到 4.2 轮询 |
+| 兼容 | §4.2 轮询**不删除**，老客户端与断线续取继续可用 |
+
+**事件模型**
+
+| event | data | 何时发 |
+|---|---|---|
+| `step_done` | 单个步骤对象（与 4.2 的 `steps[]` 元素同构：`step_name/status/latency_ms/tokens/cost/notes`） | 某步骤从 `pending` → `done`/`degraded`，每个步骤只发一次 |
+| `progress` | `{task_id, status, progress, current_step, total_steps}` | 状态/当前步骤/进度发生变化时 |
+| `done` | 完整任务详情（**与 4.2 响应同构**，含 `report_id`） | 任务成功；随后服务端关闭连接 |
+| `error` | `{message, task_id?}` | 任务失败、任务不存在、或超过 900s |
+
+**前端用法（伪代码）**
+
+```ts
+const res = await fetch(`${API}/api/v1/tasks/${id}/stream`, {
+  headers: { 'X-Device-Id': deviceId },
+});
+const reader = res.body!.getReader();
+const decoder = new TextDecoder();
+let buf = '';
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+  buf += decoder.decode(value, { stream: true });
+  const frames = buf.split('\n\n');
+  buf = frames.pop() ?? '';               // 最后一段可能不完整，留到下一轮
+  for (const frame of frames) {
+    const event = /^event: (.+)$/m.exec(frame)?.[1];
+    const data = JSON.parse(/^data: (.+)$/m.exec(frame)?.[1] ?? '{}');
+    // step_done → 追加渲染这一段；done → 用 data 直接渲染完整报告
+  }
+}
+```
+> 注意 `buf` 要**跨 chunk 保留**：一个 SSE 帧可能被 TCP 拆成两次 `read()`，
+> 直接对每个 chunk 做 `JSON.parse` 会偶发解析失败（这也是不能用 `EventSource` 之外
+> 图省事手写解析的坑之一）。
+
+
+
 ## 5. 报告
 
 ### 5.1 获取报告
@@ -385,6 +447,36 @@ MVP 阶段 `pay_url` 为 Mock 支付页；`provider` ∈ `stripe` | `wechat` | `
 
 - 列表按 `overall_score` 降序；未完成的条目 `status="pending"` 且分数为 `null`。
 - `GET /api/v1/hr/batches/{batch_id}/export.csv` → `text/csv`
+
+#### 6.5.1 批次进度流（SSE，推荐；详情接口仍然保留）
+
+`GET /api/v1/hr/batches/{batch_id}/stream` → `text/event-stream`
+
+**为什么加**：批量 100 份、每份约 30s，前端 2s 轮询只能看到 `3/100` 这种数字跳变，
+HR 在整个过程中几乎看不到进展。SSE 让**每个候选人一出结果就推一行**，
+HR 可以在第 5 个人出结果时就开始筛，不必等整批跑完。
+
+| 项 | 约定 |
+|---|---|
+| 认证 | 同其它接口（`X-Device-Id` 请求头） |
+| 客户端 | ⚠️ **必须用 `fetch()` + `ReadableStream`，不能用 `EventSource`**（无法自定义请求头） |
+| 归属校验 | 非本人批次返回 `BATCH_NOT_FOUND`（不区分"不存在"与"不是你的"） |
+| 服务端轮询 | 500ms 一次读 `hr_batch_items`（批次可能跑在 Celery worker 里，只能以 DB 为唯一真源） |
+| 心跳 | 每约 10s 一行 `: ping` |
+| 上限 | 3600s 后发 `error` 并关闭（批次可能跑几十分钟，比单份的 900s 宽） |
+| 兼容 | §6.5 详情接口**不删除**，断线续取与老客户端继续可用 |
+
+**事件模型**
+
+| event | data | 何时发 |
+|---|---|---|
+| `item_done` | 单个候选人条目（与 §6.5 的 `items[]` 元素同构：`resume_id/resume_title/status/overall_score/match_score/risk_level/report_id/summary`） | 该候选人出结果（`done`/`failed`），每人只发一次（按 `report_id` 去重） |
+| `progress` | `{batch_id, status, finished, total}` | `finished/total` 变化时 |
+| `done` | 完整批次详情（**与 §6.5 详情接口同构**，`items` 已按总分降序） | 整批完成；随后服务端关闭 |
+| `error` | `{message, batch_id?}` | 批次不存在 / 执行失败 / 超过 3600s |
+
+**前端用法**：与 §4.4 完全一致（同样的跨 chunk 缓冲解析），只是把 `step_done` 换成 `item_done`、
+进度字段换成 `finished/total`；失败同样**自动回落到 §6.5 的 2s 轮询**。
 
 ### 6.6 简历模板
 

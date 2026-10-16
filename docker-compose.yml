@@ -1,6 +1,14 @@
 name: zhenresume
+# ⚠️ 本文件已**默认停用**（两个服务的 profiles 都是 legacy）。
+#
+# 原因：这是"前后端都进容器"的旧方案；现在的实际形态是
+#   · 中间件（PostgreSQL + Redis）在 Docker —— 见 deploy/infra/docker-compose.yml
+#   · API / Celery worker 跑在宿主机
+# 保留它默认不启动，是为了避免 PyCharm 的 Compose 部署自动把它拉起来抢占 8000 端口。
+# 确实要用容器跑前后端时：docker compose --profile legacy up -d --build
 services:
-  backend:     # 缩进2空格，属于services下面
+  backend:
+    profiles: ["legacy"]
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -23,7 +31,10 @@ services:
       LIBREOFFICE_CLI: "${LIBREOFFICE_CLI:-}"
     volumes:
       - zhenresume-data:/app/data
-      - /home/xiaoqi/ZhenResume:/app
+      # ⚠️ 这里原来挂的是仓库根目录（/home/xiaoqi/ZhenResume:/app），会把镜像里
+      # 构建好的代码目录 /app/app 整个覆盖掉 → uvicorn 报 `No module named 'app'` 并无限重启。
+      # 镜像的构建上下文是 ./backend，所以挂载也必须指向 backend 目录。
+      - /home/xiaoqi/ZhenResume/backend:/app
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/health"]
       interval: 30s
@@ -31,7 +42,8 @@ services:
       retries: 3
       start_period: 30s
 
-  frontend:    # 同样缩进2空格
+  frontend:
+    profiles: ["legacy"]
     build:
       context: ./frontend
       dockerfile: Dockerfile

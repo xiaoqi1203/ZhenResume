@@ -17,6 +17,7 @@ from ..models import Resume
 from ..schemas import EditorContent, ParsedResume, ResumeFromEditor
 from ..serializers import serialize_resume, serialize_resume_summary
 from ..services import extract as extract_service
+from ..services import dedup as dedup_service
 from ..services import resume_render
 from ..services.parse_rules import parse_resume_text
 from .deps import get_current_user
@@ -65,6 +66,18 @@ def exportable_content(resume: Resume) -> EditorContent:
     return content
 
 
+def _reused_payload(resume: Resume, note: str) -> dict:
+    """去重命中时的响应：完全复用已有简历。
+
+    刻意让响应形状与"新建成功"一致（前端不需要分支判断），只用 `extract_method='dedup'`
+    和 `extract_note` 留一条可排查的痕迹 —— 也就是"只去重、不标记"。
+    """
+    payload = serialize_resume(resume)
+    payload["extract_method"] = "dedup"
+    payload["extract_note"] = note
+    return payload
+
+
 @router.post("", status_code=201)
 async def create_resume(
     file: UploadFile = File(...),
@@ -83,15 +96,37 @@ async def create_resume(
     if not data:
         raise ValidationError("上传的文件为空")
 
+    # ---- 去重（L1 文件级）：命中就复用已有那份，不重复落盘、不重复解析 ----
+    # 语义是"只去重、不标记"：不新建行、不在响应里暴露重复信息，用户拿到的是同一份简历。
+    file_sha, _ = dedup_service.compute_hashes(None, data)
+    hit, _level = dedup_service.find_duplicate(db, user.id, file_sha, None)
+    if hit is not None:
+        return _reused_payload(hit, "同一文件已上传过，已复用已有简历（未重复创建）")
+
+    # 解析失败要变成"友好的 4xx"，不能让它冒泡成 500。
+    # 实测：把一个纯文本文件命名成 .docx 上传，python-docx 会抛 BadZipFile；
+    # 用户真实场景里对应的是"文件损坏、被加密、或扩展名与实际格式不符"。
+    try:
+        result = extract_service.extract_text(data, filename)
+    except Exception as exc:  # noqa: BLE001
+        raise ValidationError(
+            f"文件解析失败（可能是文件损坏、被加密，或扩展名与实际格式不符）：{type(exc).__name__}"
+        ) from exc
+    raw_text = result.text
+    parsed = parse_resume_text(raw_text) if raw_text else ParsedResume.empty()
+
+    # ---- 去重（L2 内容级）：换了排版/导出格式但内容一致 ----
+    _, content_sha = dedup_service.compute_hashes(raw_text, None)
+    hit, _level = dedup_service.find_duplicate(db, user.id, None, content_sha)
+    if hit is not None:
+        return _reused_payload(hit, "内容与已上传的简历一致，已复用已有简历（未重复创建）")
+
     # 落盘（生产环境应换 S3 / Supabase Storage，接口形状不变）
+    # 放在去重之后：重复上传就不必再占一份磁盘
     suffix = Path(filename).suffix.lower()
     stored_name = f"{uuid.uuid4().hex}{suffix}"
     target = settings.upload_dir / stored_name
     target.write_bytes(data)
-
-    result = extract_service.extract_text(data, filename)
-    raw_text = result.text
-    parsed = parse_resume_text(raw_text) if raw_text else ParsedResume.empty()
 
     resume = Resume(
         user_id=user.id,
@@ -102,6 +137,8 @@ async def create_resume(
         file_name=filename,
         mime_type=file.content_type,
         size_bytes=len(data),
+        file_sha256=file_sha,
+        content_sha256=content_sha or None,
     )
     db.add(resume)
     db.commit()

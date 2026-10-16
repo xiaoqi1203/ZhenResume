@@ -1,0 +1,34 @@
+[Unit]
+# ZhenResume 后端全栈（PostgreSQL + Redis + API + Celery worker）—— 全部跑在 Docker 里
+# 前端不在此列：前端在开发机/浏览器侧运行，不属于服务器常驻服务。
+#
+# 这个单元解决的事：光靠 compose 的 `restart: unless-stopped` 只能保证
+# "容器还存在时"随 Docker 守护进程自启；一旦有人 `docker compose down`
+# 或换了镜像重建，开机就不会再起来。用 systemd 明确声明"开机要把这套拉起来"。
+Description=ZhenResume backend stack (postgres + redis + api + celery worker)
+Documentation=file://__REPO__/docs/vm-infra-pg-redis-celery.md
+
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=__USER__
+Group=__USER__
+WorkingDirectory=__REPO__
+
+# 复用同一个脚本：它会先杀掉宿主机上手工起的 uvicorn/celery（避免抢 8000 与抢队列），
+# 再 `up -d`，最后做健康与路由验证。
+# 开机走 --no-build --no-recreate：用已有镜像快速拉起，不重建（PG 也不必每次重启）。
+ExecStart=/usr/bin/env bash __REPO__/deploy/infra/restart.sh --no-build --no-recreate
+
+# 停止 = 停容器但保留（保留后 restart 策略仍能在下次开机拉起）；
+# 想彻底清掉用 `docker compose ... down`（不删卷）
+ExecStop=/usr/bin/docker compose -f __REPO__/deploy/infra/docker-compose.yml --profile app stop
+TimeoutStartSec=900
+TimeoutStopSec=180
+
+[Install]
+WantedBy=multi-user.target

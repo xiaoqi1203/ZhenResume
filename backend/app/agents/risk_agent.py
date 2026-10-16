@@ -56,7 +56,10 @@ class RiskAgent(Agent):
             system=ctx.prompt("risk_agent"), user=user, mock_factory=mock_factory, agent=self.name
         )
 
-        llm_findings = coerce_findings(result.data.get("findings"), default_category="risk", ctx=ctx)
+        llm_findings = coerce_findings(
+            result.data.get("findings"), default_category="risk", ctx=ctx,
+            origin=("llm" if result.mode == "live" else "rule"),
+        )
         llm_findings = [f for f in llm_findings if not _is_discriminatory(f)]
         findings = merge_findings(llm_findings, baseline)
         ctx.add_findings(findings)
