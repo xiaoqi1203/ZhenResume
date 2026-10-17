@@ -35,3 +35,6 @@ frontend/.env.local
 .idea/
 .DS_Store
 Thumbs.db
+
+# 本地视觉核对的截图（不提交）
+.dsh-shots/
