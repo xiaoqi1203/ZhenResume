@@ -53,6 +53,8 @@ def persist_report(state: WorkflowState) -> str:
             "action_items": ctx.action_items,
             "knowledge_refs": ctx.knowledge_refs,
             "qc": ctx.qc_report,
+            # Agentic RAG：检索决策轨迹（fixed 模式下为空 dict，出参为 null）
+            "agent_trace": state.get("agent_trace") or {},
             "disclaimer": DISCLAIMER,
             "agent_outputs": {k: v for k, v in ctx.outputs.items() if k != "parse"},
         }

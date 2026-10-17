@@ -198,6 +198,15 @@ class Settings(BaseSettings):
     semantic_judge_max_steps: int = 16       # 模型往返上限（实测自然收敛 5–6 次；给足余量避免强制收尾）
     semantic_judge_max_tool_calls: int = 60  # 工具调用总数上限（自然收敛约 31 次）
 
+    # ---- Agentic RAG（**仅单份诊断**生效；HR 批量恒为 fixed）----
+    # fixed   = 现有 8 节点流水线（固定检索 + 规则评分），行为一字不改；
+    # agentic = 在 qc 之后加一个非契约节点 agentic_evidence：Agent 自主多轮检索知识库，
+    #           产出 chunk 级引用并经服务端校验后挂到最终 findings 上。
+    # 注意：分数仍由 compute_scores_deterministic 算，Agent 只"加依据"，不改分。
+    workflow_mode: str = "fixed"          # fixed | agentic
+    agentic_evidence_enabled: bool = True
+    agentic_evidence_agent: str = "knowledge_evidence"
+
     # ---- 执行模型（谁把工作流跑起来）----
     # inline = FastAPI BackgroundTasks（现状；`scripts/verify.py` 依赖"请求返回前跑完"）
     # celery = 投递到 Redis 队列，由独立 worker 执行（生产；web 进程不再被长任务占住）

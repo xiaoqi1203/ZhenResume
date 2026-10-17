@@ -22,6 +22,7 @@ from ..config import DATA_DIR, settings
 from ..services.llm import get_llm
 from .nodes import (
     WorkflowAbort,
+    agentic_evidence_node,
     build_agent_nodes,
     finalize_node,
     make_agent_node,
@@ -68,8 +69,10 @@ def rework_node(_state: WorkflowState) -> dict:
 # --------------------------------------------------------------------------- #
 # 建图
 # --------------------------------------------------------------------------- #
-def build_graph(*, parallel: bool | None = None, checkpointer=None):
+def build_graph(*, parallel: bool | None = None, checkpointer=None, workflow_mode: str | None = None):
     parallel = settings.workflow_parallel if parallel is None else parallel
+    # Agentic RAG 只在单份诊断（本图）生效；HR 排序表图完全不感知该开关。
+    agentic = (workflow_mode or settings.workflow_mode) == "agentic" and settings.agentic_evidence_enabled
     nodes = build_agent_nodes()
 
     g = StateGraph(WorkflowState, context_schema=GraphContext)
@@ -88,6 +91,9 @@ def build_graph(*, parallel: bool | None = None, checkpointer=None):
             g.add_node(name, nodes[name])
 
     g.add_node("finalize", finalize_node)
+    if agentic:
+        # 非契约节点：qc 之后、finalize 之前，只挂引用不改分
+        g.add_node("agentic_evidence", agentic_evidence_node)
     g.add_node("persist", persist_node)
     if settings.workflow_rework_max > 0:
         g.add_node("rework", rework_node)
@@ -113,12 +119,15 @@ def build_graph(*, parallel: bool | None = None, checkpointer=None):
     g.add_edge("report", "qc")
     # 注意：qc 只能挂条件边，不能再挂静态边（官方明确警告两者会同时执行）
     # 映射表必须与「实际存在的节点」一致，否则 compile 会报 unknown target。
-    qc_routes = {"finalize": "finalize"}
+    # agentic 模式下 qc 的"定稿"分支先经过引用节点
+    qc_routes = {"finalize": ("agentic_evidence" if agentic else "finalize")}
     if settings.workflow_rework_max > 0:
         qc_routes["rework"] = "rework"
     g.add_conditional_edges("qc", route_after_qc, qc_routes)
     if settings.workflow_rework_max > 0:
         g.add_edge("rework", "suggestion")
+    if agentic:
+        g.add_edge("agentic_evidence", "finalize")
     g.add_edge("finalize", "persist")
     g.add_edge("persist", END)
 
@@ -241,8 +250,15 @@ async def run_graph(task_id: str, *, mode: str = "full") -> str | None:
 
     await mark_task_running(task_id)
 
+    # Agentic RAG 只用于单份诊断；HR 排序表（screening）**恒为 fixed**
+    workflow_mode = "fixed" if mode == "screening" else settings.workflow_mode
+
     async with make_checkpointer() as checkpointer:
-        graph = build_hr_graph(checkpointer=checkpointer) if mode == "screening" else build_graph(checkpointer=checkpointer)
+        graph = (
+            build_hr_graph(checkpointer=checkpointer)
+            if mode == "screening"
+            else build_graph(checkpointer=checkpointer, workflow_mode=workflow_mode)
+        )
         context = GraphContext(
             llm=get_llm(),
             semaphore=asyncio.Semaphore(max(1, settings.llm_max_concurrency)),

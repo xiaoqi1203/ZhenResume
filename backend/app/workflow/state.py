@@ -97,6 +97,8 @@ class WorkflowState(TypedDict, total=False):
     summary: str
     qc_report: dict
     role_family: str
+    # Agentic RAG 的轨迹（非契约字段，只进报告 extra_json，不写 workflow_steps）
+    agent_trace: dict
 
     # --- 需要 reducer 的字段 ---
     outputs: Annotated[dict, merge_dict]  # 并行节点各写自己那一个 key

@@ -194,3 +194,90 @@ __all__ = [
     "safe_resume",
     "setup_node",
 ]
+
+
+# --------------------------------------------------------------------------- #
+# Agentic RAG 节点（非契约：不写 workflow_steps、不计 progress）
+# --------------------------------------------------------------------------- #
+async def agentic_evidence_node(state: WorkflowState, runtime: Runtime[GraphContext]) -> dict:
+    """Agent 自主多轮检索知识库，为**最终 findings**产出可校验的 chunk 级引用。
+
+    放在 qc 之后的原因：
+    - 只给"报告里真正会出现"的结论找依据，不浪费检索与 token；
+    - Agent 不修改 findings（只挂 citations），因此不改变任何评分与结论；
+    - 引用还要再过一次 `verify_citations`（chunk 存在 + quote 逐字可定位）。
+
+    失败一律降级为"无引用"，绝不阻断报告产出。
+    """
+    if not settings.agentic_evidence_enabled:
+        return {}
+
+    findings = list(state.get("findings") or [])
+    if not findings:
+        return {"agent_trace": {"engine": "agentic", "skipped": "no_findings"}}
+
+    # 只给模型精简字段，控制 token；index 与 sort_findings/persist 的顺序一致
+    compact = [
+        {
+            "index": i,
+            "title": f.get("title") or "",
+            "issue": (f.get("issue") or "")[:120],
+            "category": f.get("category"),
+            "severity": f.get("severity"),
+        }
+        for i, f in enumerate(findings)
+    ][:10]
+
+    try:
+        from ..agentic import AgentInputs, BaseAgent, get_spec
+        from ..services.citation import attach_to_findings, citations_to_refs, verify_citations
+
+        inputs = AgentInputs(
+            resume_text=state.get("resume_text") or "",
+            jd_text=state.get("jd_text") or "",
+            parsed_resume=safe_resume(state.get("parsed_resume")),
+            parsed_jd=safe_jd(state.get("parsed_jd")),
+            role_family=state.get("role_family") or "general",
+            extra={
+                "missing_keywords": list(state.get("missing_keywords") or [])[:12],
+                "findings": compact,
+            },
+        )
+        run = await BaseAgent(get_spec(settings.agentic_evidence_agent)).run(inputs)
+
+        raw_citations = (run.output or {}).get("citations") or []
+        with session_scope() as db:
+            verified, vstats = verify_citations(db, raw_citations)
+        attached, astats = attach_to_findings(findings, verified)
+
+        # 报告级 knowledge_refs 合并去重（固定检索的 top-3 + Agent 引用到的切片）
+        refs = list(state.get("knowledge_refs") or [])
+        seen = {(r.get("doc_id"), r.get("chunk_id")) for r in refs}
+        for ref in citations_to_refs(verified):
+            key = (ref.get("doc_id"), ref.get("chunk_id"))
+            if key not in seen:
+                seen.add(key)
+                refs.append(ref)
+
+        trace = {
+            **run.trace,
+            "status": run.status,
+            "notes": run.notes,
+            "reasoning": (run.output or {}).get("reasoning") or "",
+            "verify": vstats,
+            "attach": astats,
+        }
+        return {"findings": attached, "knowledge_refs": refs, "agent_trace": trace}
+    except Exception as exc:  # noqa: BLE001 —— Agent 失败不能拖垮报告
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "agentic_evidence 降级（%s: %s）", type(exc).__name__, str(exc)[:160]
+        )
+        return {
+            "agent_trace": {
+                "engine": "agentic",
+                "status": "degraded",
+                "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+            }
+        }
