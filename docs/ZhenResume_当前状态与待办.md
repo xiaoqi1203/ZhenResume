@@ -19,11 +19,22 @@
 | **P1：工具层 7 个 tool** | ✅ | `services/agent_tools.py`；含 `locate_quote` 自检工具；参数错误返回错误而非抛异常 |
 | **P1：原生 function calling** | ✅ | `llm.complete_with_tools()`；`qwen3.8-flash` 实测 **1.5s**、返回 2 个并行 tool call |
 | **P1：`rag.search(role_family)`** | ✅ | 接线此前"有索引、有取值、从未传参"的岗位族过滤 |
-| P2：语义判定 Agent 循环 | ⏳ 待做 | 方案见 `ZhenResume_新链路LangChain-多Agent-AgenticRAG方案.md` |
+| **P2-a：单次调用 + 工具（语义判定）** | ✅ 已完成 | 同模型重跑：Spearman **+0.847**、recall **88.9%**、误判 49；¥0.005/份 |
+| **P2-c：LangChain Agent 循环** | ✅ 已完成 | Spearman +0.755、recall 90.3%、**误判 38**（↓22%）；但排序更差、成本 16× → **不接评分链路** |
+| **P3-a：Agentic RAG 运行时框架** | ✅ 已完成 | `app/agentic/`：AgentSpec + BaseAgent（预算/trace/缓存/回退/强制收尾），新增 Agent 只需声明 |
+| **P3-b：知识库证据 Agent** | ✅ 已完成 | 自主多轮检索（≤4 轮，执行器硬限）+ `read_chunk` 下钻 + finding 级引用；引用 5/6 条/份 |
+| **P3-c：引用服务端校验 + 落库 + 渲染** | ✅ 已完成 | `services/citation.py`：chunk 存在 + quote 逐字可定位；报告页/ Markdown 显示「知识库依据」 |
+| **P3-d：workflow_mode 接线（仅单份诊断）** | ✅ 已完成 | `WORKFLOW_MODE=fixed\|agentic`；HR 批量**代码强制 fixed**；fixed 173/174 不回归 |
+| **P3-e：前端检索过程面板** | ✅ 已完成 | 报告页展示每轮自拟 query、被预算拦截的方向、校验统计、Agent 自述 |
+| **P3-f：Agentic RAG 评测** | ✅ 已完成 | gold 覆盖 89.2% → **93.3%**；至少引到 1 条 gold **100%**；¥0.094/28s；**修复 `role_family` 硬过滤 bug** |
+
+**V2.0 / V3.0 汇总数字见 `docs/ZhenResume_实测数据总表.md`（单一事实来源）。**
 
 **两条必须记住的诚实结论**：
 1. 语义层解决的是**假差距**（区分"真有缺口"与"缺口其实是同义表述"）：两档 ATS 由 **0 分差 → 13 分差**；
-2. 但**排序质量未被证明提升**（Spearman +0.400 → +0.415）——现有夹具 20/30 份同档且关键词贫乏，测不出排序收益。**改进夹具是 P2 的前置任务**。
+2. 但**排序质量未被证明提升**（Spearman +0.400 → +0.415）——现有夹具 20/30 份同档且关键词贫乏，测不出排序收益。
+3. **Agent 化要按"能力增量"而不是"指标微调"来定价**：语义/关键词判定上 Agent 循环没有赢（+0.755 vs +0.847），
+   但在 Agentic RAG 上它把"结论级引用"从 **0 做到 100%**——后者的价值成立，前者不成立。
 
 ---
 
