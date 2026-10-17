@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { ArrowRight, FileSearch, ListChecks, Loader2, Target } from 'lucide-react';
 import { ApiError, createJd, createTask, uploadResume } from '@/lib/api';
+import { uploadGuardMessage } from '@/lib/upload-guard';
 import { Button } from '@/components/ui/button';
 import { buttonVariants } from '@/lib/button-variants';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -85,6 +86,15 @@ export default function HomePage() {
     try {
       setPhase('uploading');
       const resume = await uploadResume(file, file.name);
+
+      // 抽不到文字（扫描件 / OCR 引擎缺失 / 空文件）时必须拦下来：
+      // 放行只会得到一份"基于空文本的低分报告"，比直接报错更伤信任。
+      const blocked = uploadGuardMessage(resume);
+      if (blocked) {
+        setError(blocked);
+        setPhase('idle');
+        return;
+      }
 
       setPhase('parsing_jd');
       const jd = await createJd({

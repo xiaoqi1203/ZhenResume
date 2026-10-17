@@ -1,4 +1,4 @@
-"""从 .txt 样本生成 DOCX / PDF 版本的简历样本。
+"""从 .txt 样本生成 DOCX / PDF / 图片（PNG + 扫描版 PDF）版本的简历样本。
 
 存在的意义：契约声明支持 PDF / DOCX / PNG / JPG，而 .txt 走的是最简单的文本分支，
 无法验证真实的「文档解析 → 文本抽取 → 结构化」链路。这个脚本让二进制样本可复现，
@@ -7,6 +7,7 @@
 用法（在 backend 目录下）：
     python -m scripts.make_sample_docs            # 生成 DOCX，并尝试转 PDF
     python -m scripts.make_sample_docs --no-pdf   # 只生成 DOCX
+    python -m scripts.make_sample_docs --images   # 额外生成 PNG 与扫描版 PDF（OCR 回归用）
 """
 
 from __future__ import annotations
@@ -18,6 +19,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from scripts.sample_images import SECTION_HEADINGS, render_samples  # noqa: E402
+
 SAMPLES = Path(__file__).resolve().parent.parent / "samples"
 
 # 由 LibreOffice Kit 提供，避免依赖系统安装的 LibreOffice
@@ -25,18 +28,6 @@ NODE_BIN = Path(r"E:\deepseek-hhh\resources\runtime\primary-runtime\dependencies
 LIBREOFFICE_CLI = Path(
     r"E:\deepseek-hhh\resources\app.asar.unpacked\dsh\node_modules\@deepseek-ai\libreoffice-kit\lib\cli.js"
 )
-
-SECTION_HEADINGS = {
-    "个人信息",
-    "个人优势",
-    "工作经历",
-    "项目经历",
-    "专业技能",
-    "教育经历",
-    "证书",
-    "证书 / 荣誉",
-    "自我评价",
-}
 
 
 def build_docx(source: Path, target: Path) -> None:
@@ -88,8 +79,13 @@ def to_pdf(docx_path: Path, pdf_path: Path) -> tuple[bool, str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="生成 DOCX / PDF 简历样本")
+    parser = argparse.ArgumentParser(description="生成 DOCX / PDF / 图片简历样本")
     parser.add_argument("--no-pdf", action="store_true", help="跳过 PDF 生成")
+    parser.add_argument(
+        "--images",
+        action="store_true",
+        help="额外生成 PNG 与扫描版 PDF（模拟扫描件：只有图像、没有文本层）",
+    )
     args = parser.parse_args()
 
     sources = sorted(SAMPLES.glob("sample_resume_*.txt"))
@@ -102,6 +98,15 @@ def main() -> int:
         docx_path = source.with_suffix(".docx")
         build_docx(source, docx_path)
         print(f"[DOCX] {docx_path.name}  ({docx_path.stat().st_size / 1024:.1f} KB)")
+
+        if args.images:
+            png_path = source.with_suffix(".png")
+            scan_path = source.with_name(f"{source.stem}_scan.pdf")
+            info = render_samples(source, png_path, scan_path)
+            print(f"[PNG ] {png_path.name}  ({png_path.stat().st_size / 1024:.1f} KB, {info['size'][0]}x{info['size'][1]})")
+            print(f"[SCAN] {scan_path.name}  ({scan_path.stat().st_size / 1024:.1f} KB, 无文本层)")
+            if not info["cjk_font"]:
+                print("       ⚠️ 未找到中文字体，图片里的中文会变方框；OCR 断言会被跳过")
 
         if args.no_pdf:
             continue

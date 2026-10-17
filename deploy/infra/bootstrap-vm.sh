@@ -10,6 +10,9 @@
 # 脚本只做：装 Docker（如缺）→ 写两份 .env → 起 db/redis → 等健康 → 装依赖
 #          → 基础设施自检 → 建表 + 灌知识库 → 端到端契约自检
 # 不启动 api/worker —— 那两步在脚本结尾打印给你（PyCharm 或 systemd 都行）。
+#
+# 可选：OCR_INSTALL=rapidocr|tesseract 时，第 5 步会顺带在**宿主机 venv** 里装本地
+#      OCR 引擎（图片简历 / 扫描件用，不需要任何外部 API），并在第 6 步自检。
 
 set -uo pipefail
 
@@ -109,9 +112,39 @@ PY="$BACKEND/.venv/bin/python"
 [ -x "$PY" ] || die "找不到 $PY —— 先在 VM 里建好 venv（python3 -m venv .venv）"
 "$PY" -m pip install -q -r "$BACKEND/requirements.txt" || die "依赖安装失败"
 
+# 可选：本地 OCR（图片简历 / 扫描版 PDF）。**不需要任何外部 API/Key**，纯本机推理。
+# 默认不装：不装时这两类输入会明确降级（空文本 + extract_note，前端拦下来提示换格式）。
+#   OCR_INSTALL=rapidocr  bash deploy/infra/bootstrap-vm.sh   # 纯 pip，中文效果好（推荐）
+#   OCR_INSTALL=tesseract bash deploy/infra/bootstrap-vm.sh   # 更轻，走 apt 装二进制
+case "${OCR_INSTALL:-none}" in
+  rapidocr)
+    say "     安装本地 OCR：rapidocr（onnxruntime 本地推理）"
+    "$PY" -m pip install -q rapidocr-onnxruntime==1.4.4 || die "rapidocr 安装失败"
+    ;;
+  tesseract)
+    say "     安装本地 OCR：tesseract（apt 二进制 + pytesseract 封装）"
+    if ! command -v tesseract >/dev/null 2>&1; then
+      sudo apt-get update -qq && sudo apt-get install -y tesseract-ocr tesseract-ocr-chi-sim \
+        || warn "tesseract 安装失败，可稍后手工装（apt install tesseract-ocr tesseract-ocr-chi-sim）"
+    fi
+    "$PY" -m pip install -q pytesseract==0.3.13 || warn "pytesseract 安装失败"
+    ;;
+  none|"")
+    echo "     （未装 OCR 引擎：图片/扫描件会明确降级；需要时用 OCR_INSTALL=rapidocr 重跑）"
+    ;;
+  *)
+    warn "OCR_INSTALL=$OCR_INSTALL 不认识（可选 rapidocr / tesseract / none），已跳过"
+    ;;
+esac
+
 # ---------------------------------------------------------------- 6. 自检
 say "6/8 基础设施自检（真实连接 PG / Redis / Celery）"
 ( cd "$BACKEND" && "$PY" -m scripts.check_infra ) || die "自检未通过 —— 按上面提示修好再重跑本脚本"
+
+if [ "${OCR_INSTALL:-none}" != "none" ]; then
+  say "     本地 OCR 自检（真跑一遍合成图片与扫描件）"
+  ( cd "$BACKEND" && "$PY" -m scripts.check_ocr ) || die "OCR 自检未通过 —— 图片简历会解析失败"
+fi
 
 # ---------------------------------------------------------------- 7. 建表 + 知识库
 say "7/8 建表（PG 上是空库，create_all 会建全部表 + 唯一索引）并灌知识库种子"

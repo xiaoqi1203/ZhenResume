@@ -13,6 +13,9 @@
 #   4. 默认不装 LibreOffice：PDF 导出在本项目中本就是可选能力，缺失时
 #      pdf_enabled=False → 返回 503 PDF_UNAVAILABLE → 前端引导改用 DOCX。
 #      需要容器内出 PDF 见文件末尾注释。
+#   5. OCR 引擎由 build arg `INSTALL_OCR` 控制（rapidocr / tesseract / none）：
+#      图片简历与扫描版 PDF 是可选能力，none 时 extract_method=ocr-unavailable +
+#      明确 note，前端会拦下来提示换格式。默认 none，compose 里默认 rapidocr。
 #
 # 构建：docker build -t zhenresume-backend ./backend   （上下文 = backend/）
 
@@ -53,6 +56,38 @@ RUN set -eux; \
     else \
         pip install -r requirements.txt; \
     fi
+
+# ---- 本地 OCR 引擎（图片简历 / 扫描版 PDF；**不需要任何外部 API/Key**）----
+# 由 compose 用 build args 传（见 deploy/infra/docker-compose.yml）：
+#   rapidocr  = 默认。纯 pip，PP-OCR 中英文模型随包自带，中文效果好。
+#               代价：pip 约 70MB + onnxruntime/opencv 在 slim 上必需的三个系统库。
+#   tesseract = 更轻（apt 约 15MB + pip 薄封装），中文精度略逊。
+#   none      = 不装；图片/扫描件返回 ocr-unavailable + 明确 note（前端会拦下并提示换格式）。
+# 放在依赖层之后：改业务代码不会连带重装这 70MB。
+# ⚠️ 装完务必在镜像里自检：docker run --rm <镜像> python -m scripts.check_ocr
+ARG INSTALL_OCR=none
+RUN set -eux; \
+    case "$INSTALL_OCR" in \
+      rapidocr) \
+        apt-get update; \
+        apt-get install -y --no-install-recommends libgomp1 libgl1 libglib2.0-0; \
+        rm -rf /var/lib/apt/lists/*; \
+        pip install --no-cache-dir rapidocr-onnxruntime==1.4.4; \
+        ;; \
+      tesseract) \
+        apt-get update; \
+        apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-chi-sim; \
+        rm -rf /var/lib/apt/lists/*; \
+        pip install --no-cache-dir pytesseract==0.3.13; \
+        ;; \
+      none|"") \
+        echo "跳过 OCR 引擎：图片简历与扫描件会明确降级（见 .env.example 的 OCR_* 段）"; \
+        ;; \
+      *) \
+        echo "未知 INSTALL_OCR=$INSTALL_OCR（可选 rapidocr / tesseract / none）" >&2; \
+        exit 1; \
+        ;; \
+    esac
 
 # ---- 运行期用户与数据目录（必须在 COPY 代码之前：见文件头第 3 条）----
 RUN set -eux; \
@@ -98,4 +133,22 @@ CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "
 #
 # 注意：PDF 路线是 DOCX → LibreOffice → PDF，缺少中文字体（fonts-noto-cjk）
 # 时中文会变方框，所以字体包不是可选项。
+# --------------------------------------------------------------------------- #
+
+# --------------------------------------------------------------------------- #
+# 可选：让容器内也能识别图片简历 / 扫描版 PDF（**不需要任何外部 API/Key**）
+#
+# 已经在上面用 `ARG INSTALL_OCR` 实现好了，这里只留"怎么传参 + 怎么验证"：
+#
+#   docker build --build-arg INSTALL_OCR=rapidocr -t zhenresume-backend ./backend
+#   docker run --rm zhenresume-backend python -m scripts.check_ocr
+#
+# 走 compose 时不用手敲 build args（deploy/infra/docker-compose.yml 已把
+# INSTALL_OCR 默认设成 rapidocr）：
+#   docker compose -f deploy/infra/docker-compose.yml --profile app up -d --build
+#   INSTALL_OCR=tesseract docker compose ... --profile app up -d --build   # 换轻量方案
+#   INSTALL_OCR=none       docker compose ... --profile app up -d --build   # 关掉 OCR
+#
+# 注意：镜像内没有中文字体时，check_ocr 会跳过「中文识别正确性」断言 ——
+# 那只是合成样本画不出中文，真实图片的识别不受影响。
 # --------------------------------------------------------------------------- #

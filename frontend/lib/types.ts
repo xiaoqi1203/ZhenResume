@@ -138,6 +138,13 @@ export interface Resume {
   /** 仅编辑器创建的简历有值；上传的简历为 `null` */
   editor_content: EditorContent | null;
   created_at: string;
+  /**
+   * 抽取方法，例如 `pypdf` / `python-docx` / `ocr/rapidocr` / `ocr-unavailable`。
+   * 仅上传接口会返回（去重命中时为 `dedup`），详情/列表接口没有这个字段。
+   */
+  extract_method?: string | null;
+  /** 降级原因：OCR 引擎缺失、扫描件无文本层等。前端据此提示用户，而不是静默继续。 */
+  extract_note?: string | null;
 }
 
 /* ------------------------------------------------------------------ */
