@@ -13,9 +13,9 @@ export interface AgentTracePanelProps {
 }
 
 function statusLabel(trace: AgentTrace): { text: string; tone: string } {
-  if (trace.status === 'done') return { text: '已完成', tone: 'text-green-700 bg-green-50 border-green-200' };
-  if (trace.status === 'truncated') return { text: '预算耗尽后收尾', tone: 'text-amber-700 bg-amber-50 border-amber-200' };
-  return { text: '降级（无引用）', tone: 'text-slate-600 bg-slate-50 border-slate-200' };
+  if (trace.status === 'done') return { text: '已完成', tone: 'text-green-700 border-green-600' };
+  if (trace.status === 'truncated') return { text: '预算耗尽后收尾', tone: 'text-amber-700 border-amber-500' };
+  return { text: '降级（无引用）', tone: 'text-ink-500 border-ink-300' };
 }
 
 /**
@@ -32,11 +32,11 @@ export function AgentTracePanel({ trace, className }: AgentTracePanelProps) {
   const blocked = trace.retrieval_blocked ?? 0;
 
   return (
-    <Card className={cn('border-brand-200/70 bg-brand-50/30', className)}>
+    <Card className={cn('border-ink-950', className)}>
       <CardHeader>
         <CardTitle className="flex flex-wrap items-center gap-2">
-          <Sparkles className="h-4 w-4 text-brand-500" aria-hidden />
-          智能检索过程（Agentic RAG）
+          <Sparkles className="h-3.5 w-3.5 text-brand-500" aria-hidden />
+          智能检索过程 / Agentic RAG
           <Badge variant="outline" className={status.tone}>
             {status.text}
           </Badge>
@@ -47,7 +47,7 @@ export function AgentTracePanel({ trace, className }: AgentTracePanelProps) {
       </CardHeader>
 
       <CardContent className="space-y-4">
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <div className="grid grid-cols-2 gap-px border border-ink-200 bg-ink-200 sm:grid-cols-4">
           <Metric label="检索轮次" value={`${trace.retrieval_rounds ?? 0}${blocked ? ` / 拦截 ${blocked}` : ''}`} icon={Search} />
           <Metric label="模型往返" value={String(trace.model_calls ?? 0)} icon={Compass} />
           <Metric label="引用通过" value={total ? `${verified}/${total}` : '—'} icon={CheckCircle2} />
@@ -60,19 +60,21 @@ export function AgentTracePanel({ trace, className }: AgentTracePanelProps) {
 
         {queries.length > 0 ? (
           <div>
-            <p className="mb-1.5 text-xs font-medium text-slate-500">它自己拟定的检索方向（按调用顺序）</p>
+            <p className="mb-2 text-[10.5px] font-bold uppercase tracking-[0.12em] text-ink-500">
+              它自己拟定的检索方向（按调用顺序）
+            </p>
             <ol className="space-y-1.5">
               {queries.map((query, index) => {
                 const isBlocked = index >= (trace.retrieval_rounds ?? queries.length);
                 return (
                   <li
                     key={`${index}-${query}`}
-                    className="flex items-start gap-2 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700"
+                    className="flex items-start gap-2 border-l-2 border-ink-200 bg-ink-50 px-2.5 py-1.5 text-[11.5px] leading-relaxed text-ink-800"
                   >
                     {isBlocked ? (
                       <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" aria-hidden />
                     ) : (
-                      <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-green-500" aria-hidden />
+                      <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-green-600" aria-hidden />
                     )}
                     <span className="break-words">
                       {query || '（空 query）'}
@@ -88,7 +90,7 @@ export function AgentTracePanel({ trace, className }: AgentTracePanelProps) {
         ) : null}
 
         {trace.verify ? (
-          <p className="text-xs text-slate-500">
+          <p className="text-[11px] leading-relaxed text-ink-500">
             服务端校验：chunk 不存在 {trace.verify.rejected_missing_chunk ?? 0} 条｜
             quote 无法逐字定位 {trace.verify.rejected_quote_not_found ?? 0} 条｜
             重复 {trace.verify.rejected_duplicate ?? 0} 条
@@ -96,18 +98,20 @@ export function AgentTracePanel({ trace, className }: AgentTracePanelProps) {
         ) : null}
 
         {trace.reasoning ? (
-          <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
-            <p className="mb-1 text-xs font-medium text-slate-500">Agent 自述（为什么这样检索 / 为什么没引用）</p>
-            <p className="whitespace-pre-wrap break-words text-xs leading-relaxed text-slate-700">
+          <div className="border border-ink-200 bg-ink-50 px-3 py-2.5">
+            <p className="mb-1 text-[10.5px] font-bold uppercase tracking-[0.12em] text-ink-500">
+              Agent 自述（为什么这样检索 / 为什么没引用）
+            </p>
+            <p className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-ink-700">
               {trace.reasoning}
             </p>
           </div>
         ) : null}
 
-        <p className="text-[11px] text-slate-400">
-          成本 ¥{(trace.cost ?? 0).toFixed(4)}｜tokens {trace.tokens ?? 0}｜延迟{' '}
+        <p className="text-[10.5px] uppercase tracking-[0.08em] text-ink-400">
+          成本 ¥{(trace.cost ?? 0).toFixed(4)} / tokens {trace.tokens ?? 0} / 延迟{' '}
           {Math.round((trace.latency_ms ?? 0) / 1000)}s
-          {trace.truncated ? '｜预算耗尽：结果可能不完整' : ''}
+          {trace.truncated ? ' / 预算耗尽：结果可能不完整' : ''}
         </p>
       </CardContent>
     </Card>
@@ -124,12 +128,14 @@ function Metric({
   icon: React.ComponentType<{ className?: string }>;
 }) {
   return (
-    <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
-      <p className="flex items-center gap-1 text-[11px] text-slate-500">
+    <div className="bg-white px-3 py-2.5">
+      <p className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-[0.1em] text-ink-400">
         <Icon className="h-3 w-3" aria-hidden />
         {label}
       </p>
-      <p className="mt-0.5 text-sm font-semibold tabular-nums text-slate-900">{value}</p>
+      <p className="mt-1 text-[22px] font-extrabold leading-none tracking-tight tabular-nums text-ink-950">
+        {value}
+      </p>
     </div>
   );
 }

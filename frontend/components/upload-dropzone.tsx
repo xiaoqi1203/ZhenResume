@@ -103,16 +103,16 @@ export function UploadDropzone({
       />
 
       {file ? (
-        <div className="flex items-center justify-between gap-3 rounded-xl border border-brand-200 bg-brand-50/60 px-4 py-3">
+        <div className="flex items-center justify-between gap-3 border border-ink-950 bg-ink-50 px-4 py-3">
           <div className="flex min-w-0 items-center gap-3">
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white text-brand-600 ring-1 ring-brand-200">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center bg-ink-950 text-white">
               <FileText className="h-4 w-4" aria-hidden />
             </span>
             <div className="min-w-0">
-              <p className="truncate text-sm font-medium text-slate-900" title={file.name}>
+              <p className="truncate text-[13px] font-bold text-ink-950" title={file.name}>
                 {file.name}
               </p>
-              <p className="text-xs text-slate-500">{formatFileSize(file.size)}</p>
+              <p className="text-[11px] text-ink-500">{formatFileSize(file.size)}</p>
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
@@ -120,7 +120,7 @@ export function UploadDropzone({
               type="button"
               onClick={() => inputRef.current?.click()}
               disabled={disabled}
-              className="rounded-md px-2 py-1 text-xs font-medium text-brand-700 hover:bg-white disabled:opacity-50"
+              className="border border-ink-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-700 hover:border-ink-950 hover:text-ink-950 disabled:opacity-50"
             >
               重新选择
             </button>
@@ -129,7 +129,7 @@ export function UploadDropzone({
               onClick={clear}
               disabled={disabled}
               aria-label="移除文件"
-              className="rounded-md p-1.5 text-slate-400 hover:bg-white hover:text-slate-700 disabled:opacity-50"
+              className="p-1.5 text-ink-400 hover:bg-white hover:text-ink-950 disabled:opacity-50"
             >
               <X className="h-4 w-4" aria-hidden />
             </button>
@@ -155,21 +155,21 @@ export function UploadDropzone({
           onDragLeave={() => setDragging(false)}
           onDrop={handleDrop}
           className={cn(
-            'flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed px-6 py-10 text-center transition-colors',
+            'flex cursor-pointer flex-col items-center justify-center gap-3 border-2 border-dashed px-6 py-12 text-center transition-colors',
             'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500',
             dragging
-              ? 'border-brand-400 bg-brand-50'
-              : 'border-slate-300 bg-slate-50/60 hover:border-brand-300 hover:bg-slate-50',
+              ? 'border-brand-500 bg-brand-50'
+              : 'border-ink-300 bg-ink-50 hover:border-ink-950 hover:bg-white',
             disabled && 'pointer-events-none opacity-60',
           )}
         >
-          <span className="flex h-11 w-11 items-center justify-center rounded-full bg-white text-brand-600 shadow-sm ring-1 ring-slate-200">
+          <span className="flex h-11 w-11 items-center justify-center bg-ink-950 text-white">
             <UploadCloud className="h-5 w-5" aria-hidden />
           </span>
-          <p className="text-sm font-medium text-slate-800">
-            拖拽简历到此处，或<span className="text-brand-600"> 点击选择文件</span>
+          <p className="text-[14px] font-bold tracking-tight text-ink-950">
+            拖拽简历到此处，或<span className="text-brand-500"> 点击选择文件</span>
           </p>
-          <p className="text-xs text-slate-500">{hint}</p>
+          <p className="text-[11px] text-ink-500">{hint}</p>
         </div>
       )}
 

@@ -415,7 +415,7 @@ function CollapsibleBlock({
         </span>
         <span className="flex items-center gap-2 text-xs">
           {filled ? (
-            <span className="inline-flex items-center gap-1 text-green-600">
+            <span className="inline-flex items-center gap-1 text-ink-950">
               <Check className="h-3.5 w-3.5" aria-hidden />
               已填写
             </span>
@@ -427,7 +427,7 @@ function CollapsibleBlock({
       {open ? (
         <CardContent className="space-y-4">
           {section?.tip ? (
-            <p className="rounded-lg bg-brand-50/70 px-3 py-2 text-xs leading-relaxed text-brand-800">
+            <p className="border-l-2 border-ink-950 bg-ink-50 px-3 py-2 text-[11.5px] leading-relaxed text-ink-700">
               {section.tip}
             </p>
           ) : null}
@@ -887,7 +887,7 @@ export function EditorWorkspace() {
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="space-y-1">
             <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight text-slate-900 sm:text-2xl">
-              <Sparkles className="h-5 w-5 text-brand-600" aria-hidden />
+              <Sparkles className="h-5 w-5 text-ink-950" aria-hidden />
               简历编辑器
             </h1>
             <p className="text-sm text-slate-600">
@@ -895,7 +895,7 @@ export function EditorWorkspace() {
             </p>
           </div>
           <div className="flex flex-col items-start gap-1 sm:items-end">
-            <span className="rounded-full bg-brand-50 px-3 py-1 text-xs font-medium text-brand-700 ring-1 ring-inset ring-brand-100">
+            <span className="border border-ink-950 px-2.5 py-1 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-950">
               已填 {filledCount}/{BLOCK_KEYS.length} 个区块
             </span>
             {draftSavedAt ? (
@@ -905,7 +905,7 @@ export function EditorWorkspace() {
         </div>
 
         {draftRestored ? (
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-brand-100 bg-brand-50/60 px-4 py-2 text-sm text-brand-800">
+          <div className="flex flex-wrap items-center justify-between gap-2 border border-ink-950 bg-ink-50 px-4 py-2 text-[12px] text-ink-800">
             <span>已恢复上次的草稿，可以直接继续编辑。</span>
             <Button size="sm" variant="outline" onClick={handleDiscardDraft}>
               放弃草稿
@@ -976,8 +976,8 @@ export function EditorWorkspace() {
                         className={cn(
                           'rounded-xl border p-3 text-left transition-colors',
                           active
-                            ? 'border-brand-500 bg-brand-50/60 ring-1 ring-brand-200'
-                            : 'border-slate-200 bg-white hover:border-brand-300 hover:bg-slate-50',
+                            ? 'border-ink-950 bg-ink-50'
+                            : 'border-ink-200 bg-white hover:border-ink-950 hover:bg-ink-50',
                         )}
                       >
                         <span className="flex items-center justify-between gap-2">
@@ -1030,7 +1030,7 @@ export function EditorWorkspace() {
                     {activeTemplate.writing_rules.map((rule, index) => (
                       <li key={index} className="flex gap-2 text-xs leading-relaxed text-slate-600">
                         <span
-                          className="mt-[6px] h-1.5 w-1.5 shrink-0 rounded-full bg-brand-400"
+                          className="mt-[6px] h-1.5 w-1.5 shrink-0 bg-ink-950"
                           aria-hidden
                         />
                         <span>{rule}</span>
@@ -1080,11 +1080,11 @@ export function EditorWorkspace() {
               }}
               className={cn(
                 'flex flex-wrap items-center justify-between gap-3 rounded-[10px] border border-dashed px-3.5 py-3 transition-colors duration-200 ease-spring',
-                dragActive ? 'border-brand-400 bg-brand-50/70' : 'border-ink-300 bg-ink-50/70',
+                dragActive ? 'border-ink-950 bg-white' : 'border-ink-300 bg-ink-50/70',
               )}
             >
               <div className="flex items-center gap-2.5">
-                <span className="flex h-8 w-8 items-center justify-center rounded-[9px] bg-white text-brand-600 ring-1 ring-inset ring-ink-200">
+                <span className="flex h-8 w-8 items-center justify-center bg-ink-950 text-white">
                   <FileUp className="h-4 w-4" aria-hidden strokeWidth={1.75} />
                 </span>
                 <div>
@@ -1175,7 +1175,7 @@ export function EditorWorkspace() {
                                 className={cn(
                                   'shrink-0 rounded px-1.5 py-0.5 text-[11px]',
                                   item.source === 'editor'
-                                    ? 'bg-brand-50 text-brand-700'
+                                    ? 'bg-ink-950 text-white'
                                     : 'bg-slate-100 text-slate-500',
                                 )}
                               >

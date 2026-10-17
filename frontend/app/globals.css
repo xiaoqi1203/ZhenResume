@@ -2,6 +2,14 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * 「紫纸」风格全局底色
+ * ---------------------------------------------------------------
+ * 参考 image_demo/img_1.png：电光紫画布上摆一张白色纸面。
+ * 实现方式：body = 紫画布；`.sheet` = 白纸（由 app/layout.tsx 包裹全部内容）。
+ * 这样紫只出现在页面四周的"边"，内容区永远是白纸，长时间阅读不刺眼。
+ */
+
 @layer base {
   html {
     -webkit-text-size-adjust: 100%;
@@ -9,30 +17,28 @@
   }
 
   body {
-    @apply bg-ink-50 text-ink-900 antialiased;
+    @apply bg-brand-500 text-ink-900 antialiased;
     font-family:
-      -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
-      'Microsoft YaHei', 'Source Han Sans SC', 'Noto Sans SC', sans-serif;
-    /*
-     * 关于"背景质感"：试过两种方案，都实测无效果，故都不保留 ——
-     * 1) SVG feTurbulence 纸感颗粒：空白区灰度标准差仅 0.53（等于不可见），
-     *    且让整页截图从 106KB 涨到 2458KB；调到能看见又会压到正文可读性；
-     * 2) 径向暖光晕：定位基于超高 body 的百分比，实际整个光晕落在页面之外，顶部与底部亮度完全一致。
-     * 结论：本项目的层次感由暖色配色、衬线标题、发丝边框与留白承担，不叠加不可验证的装饰层。
-     */
-    background-color: theme('colors.ink.50');
+      'Helvetica Neue', Helvetica, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+      'Microsoft YaHei', 'Source Han Sans SC', 'Noto Sans SC', Arial, sans-serif;
+    background-color: theme('colors.brand.500');
+    /* 画布四周留出"紫边"：宽度随视口变化，宽屏更明显 */
+    padding: clamp(10px, 2.2vw, 32px);
   }
 
-  /* 标题默认衬线 + 收紧字距：编辑气质来自"大字号 + 紧字距 + 重字重"，而不是字号堆叠 */
+  /*
+   * 标题：无衬线 + 重字重 + 紧字距。
+   * 参考图的标题靠"字重对比"而不是"字体对比"：同一族里 800 vs 400 建立层级。
+   */
   h1,
   h2 {
-    @apply font-serif font-semibold tracking-tight text-ink-900;
+    @apply font-sans font-extrabold tracking-tighter text-ink-900;
     text-wrap: balance;
   }
 
   h3,
   h4 {
-    @apply tracking-tight text-ink-900;
+    @apply font-sans font-bold tracking-tight text-ink-900;
     text-wrap: balance;
   }
 
@@ -40,14 +46,43 @@
     text-wrap: pretty;
   }
 
-  /* 键盘可达性的兜底焦点环（组件内还可覆盖） */
+  /* 键盘可达性：黑白界面里焦点环用紫色实心描边，一眼可见 */
   :focus-visible {
     outline: 2px solid theme('colors.brand.500');
     outline-offset: 2px;
   }
 
   ::selection {
-    @apply bg-brand-100 text-brand-900;
+    @apply bg-brand-500 text-white;
+  }
+}
+
+@layer components {
+  /* 白色纸面：整个应用的内容容器 */
+  .sheet {
+    @apply relative mx-auto w-full bg-white;
+    border-radius: 0;
+    min-height: calc(100vh - 2 * clamp(10px, 2.2vw, 32px));
+    min-height: calc(100dvh - 2 * clamp(10px, 2.2vw, 32px));
+  }
+
+  /* 发丝线分隔（层级只有两种手段：1px 线 + 留白） */
+  .hairline {
+    @apply border-ink-200;
+  }
+
+  /* 强调条形块：参考图里 "Before / With skill" 那种反白小块 */
+  .chip-invert {
+    @apply inline-flex items-center bg-ink-950 px-2 py-1 text-[11px] font-semibold text-white;
+  }
+
+  /* 数据块：大号 tabular 数字 + 小标签，用于分数/指标 */
+  .stat-value {
+    @apply font-sans text-4xl font-extrabold leading-none tracking-tighter tabular-nums text-ink-950;
+  }
+
+  .stat-label {
+    @apply text-[11px] font-medium uppercase tracking-[0.14em] text-ink-500;
   }
 }
 
@@ -64,7 +99,7 @@
     border-width: 0;
   }
 
-  /* 跳到主内容：键盘用户按 Tab 第一个就能拿到，平时视觉隐藏 */
+  /* 跳到主内容：键盘用户按 Tab 第一个就能拿到 */
   .skip-link {
     position: absolute;
     left: 1rem;
@@ -81,11 +116,23 @@
   .tnum {
     font-variant-numeric: tabular-nums;
   }
+
+  /* 参考图里的斜向箭头："Explore skill ↗" —— 用于"查看详情"类链接 */
+  .arrow-cta::after {
+    content: '↗';
+    margin-left: 0.35rem;
+    display: inline-block;
+    transition: transform 200ms cubic-bezier(0.2, 0, 0, 1);
+  }
+
+  .arrow-cta:hover::after {
+    transform: translate(2px, -2px);
+  }
 }
 
 /* ------------------------------------------------------------------ */
 /* 打印样式：编辑器页 Ctrl+P 只输出右侧简历预览                        */
-/* 结构依据 app/layout.tsx：<body><a.skip-link/><header/><main/><footer/> */
+/* 结构依据 app/layout.tsx：<body><a.skip-link/><div.sheet><header/><main/><footer/></div> */
 /* ------------------------------------------------------------------ */
 
 @media print {
@@ -97,13 +144,20 @@
   html,
   body {
     background: #ffffff !important;
+    padding: 0 !important;
   }
 
-  /* 打印时去掉站点框架，只留简历内容 */
+  /* 打印时不打印紫色画布与站点框架 */
   .skip-link,
-  body > header,
-  body > footer {
+  .sheet > header,
+  .sheet > footer,
+  .no-print {
     display: none !important;
+  }
+
+  .sheet {
+    min-height: 0 !important;
+    max-width: none !important;
   }
 
   main {
@@ -115,7 +169,6 @@
   /* 预览卡片的滚动容器在打印时不能裁剪内容 */
   .print-area {
     border: 0 !important;
-    border-radius: 0 !important;
     box-shadow: none !important;
     padding: 0 !important;
     max-width: none !important;

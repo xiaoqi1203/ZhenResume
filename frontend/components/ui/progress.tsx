@@ -7,6 +7,7 @@ export interface ProgressProps extends React.HTMLAttributes<HTMLDivElement> {
   indicatorClassName?: string;
 }
 
+/** 进度条：直角、通栏细线，填充默认纯黑（参考图的黑白对比） */
 export function Progress({ className, value = 0, indicatorClassName, ...props }: ProgressProps) {
   const clamped = Math.min(100, Math.max(0, Number.isFinite(value) ? value : 0));
   return (
@@ -15,12 +16,12 @@ export function Progress({ className, value = 0, indicatorClassName, ...props }:
       aria-valuemin={0}
       aria-valuemax={100}
       aria-valuenow={Math.round(clamped)}
-      className={cn('h-1.5 w-full overflow-hidden rounded-full bg-ink-100', className)}
+      className={cn('h-1 w-full overflow-hidden bg-ink-200', className)}
       {...props}
     >
       <div
         className={cn(
-          'h-full rounded-full bg-brand-500 transition-[width] duration-500 ease-spring',
+          'h-full bg-ink-950 transition-[width] duration-500 ease-spring',
           indicatorClassName,
         )}
         style={{ width: `${clamped}%` }}

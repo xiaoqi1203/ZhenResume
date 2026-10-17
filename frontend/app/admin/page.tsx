@@ -57,7 +57,7 @@ interface StatCardProps {
 
 function StatCard({ label, value, hint, icon: Icon, emphasis = false }: StatCardProps) {
   return (
-    <Card className={emphasis ? 'border-brand-200 bg-brand-50/40' : undefined}>
+    <Card className={emphasis ? 'border-ink-950 bg-ink-50' : undefined}>
       <CardContent className="space-y-1.5 p-4 pt-4">
         <div className="flex items-center justify-between">
           <p className="text-xs font-medium text-slate-500">{label}</p>
@@ -212,7 +212,7 @@ export default function AdminPage() {
 
       {/* 强调：成本与公平性 */}
       <section className="grid gap-4 lg:grid-cols-2">
-        <Card className="border-brand-200">
+        <Card className="border-ink-950">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-brand-800">
               <Coins className="h-4 w-4" aria-hidden />

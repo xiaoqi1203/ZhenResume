@@ -8,15 +8,15 @@ const LABELS: Record<RiskLevel, string> = {
 };
 
 const CLASSES: Record<RiskLevel, string> = {
-  red: 'bg-red-50 text-red-700 ring-1 ring-inset ring-red-200',
-  yellow: 'bg-amber-50 text-amber-800 ring-1 ring-inset ring-amber-200',
-  green: 'bg-green-50 text-green-700 ring-1 ring-inset ring-green-200',
+  red: 'border border-red-500 text-red-700',
+  yellow: 'border border-amber-500 text-amber-700',
+  green: 'border border-green-600 text-green-700',
 };
 
 const DOTS: Record<RiskLevel, string> = {
   red: 'bg-red-500',
   yellow: 'bg-amber-500',
-  green: 'bg-green-500',
+  green: 'bg-green-600',
 };
 
 export interface RiskBadgeProps {
@@ -32,7 +32,7 @@ export function RiskBadge({ level, className, label, showDot = true }: RiskBadge
     return (
       <span
         className={cn(
-          'inline-flex items-center rounded-md bg-slate-100 px-2 py-0.5 text-xs font-medium leading-5 text-slate-500',
+          'inline-flex items-center border border-ink-300 px-1.5 py-0.5 text-[10.5px] font-semibold uppercase leading-5 tracking-[0.08em] text-ink-500',
           className,
         )}
       >
@@ -44,12 +44,12 @@ export function RiskBadge({ level, className, label, showDot = true }: RiskBadge
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-xs font-medium leading-5',
+        'inline-flex items-center gap-1.5 px-1.5 py-0.5 text-[10.5px] font-semibold uppercase leading-5 tracking-[0.08em]',
         CLASSES[level],
         className,
       )}
     >
-      {showDot ? <span className={cn('h-1.5 w-1.5 rounded-full', DOTS[level])} aria-hidden /> : null}
+      {showDot ? <span className={cn('h-1.5 w-1.5', DOTS[level])} aria-hidden /> : null}
       {label ?? LABELS[level]}
     </span>
   );

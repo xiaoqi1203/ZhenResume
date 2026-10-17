@@ -51,14 +51,15 @@ export function Tabs({
   );
 }
 
+/**
+ * 标签栏 —— 参照参考图顶部 "Conference / Reading app / Product launch"：
+ * 无容器底色、无圆角，当前项用**黑色下划线**指示。
+ */
 export function TabsList({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return (
     <div
       role="tablist"
-      className={cn(
-        'inline-flex flex-wrap items-center gap-1 rounded-xl bg-ink-100 p-1 text-ink-600',
-        className,
-      )}
+      className={cn('flex flex-wrap items-stretch gap-6 border-b border-ink-200', className)}
       {...props}
     />
   );
@@ -79,12 +80,11 @@ export function TabsTrigger({ value, className, children, ...props }: TabsTrigge
       data-state={active ? 'active' : 'inactive'}
       onClick={() => setValue(value)}
       className={cn(
-        'inline-flex items-center justify-center whitespace-nowrap rounded-lg px-3 py-1.5 text-sm font-medium',
-        'transition-all duration-200 ease-spring',
-        'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500',
+        'relative -mb-px inline-flex items-center justify-center whitespace-nowrap border-b-2 pb-2.5 pt-1 text-[13px] font-medium transition-colors duration-150',
+        'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink-950',
         active
-          ? 'bg-white text-ink-900 shadow-sm'
-          : 'text-ink-500 hover:bg-white/60 hover:text-ink-900',
+          ? 'border-ink-950 text-ink-950'
+          : 'border-transparent text-ink-400 hover:text-ink-950',
         className,
       )}
       {...props}
@@ -102,7 +102,7 @@ export function TabsContent({ value, className, children, ...props }: TabsConten
   const { value: current } = useTabsContext('TabsContent');
   if (current !== value) return null;
   return (
-    <div role="tabpanel" className={cn('mt-4 animate-fade-in', className)} {...props}>
+    <div role="tabpanel" className={cn('mt-6 animate-fade-in', className)} {...props}>
       {children}
     </div>
   );

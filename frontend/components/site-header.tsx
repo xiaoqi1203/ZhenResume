@@ -2,7 +2,6 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { FileScan } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const NAV_ITEMS = [
@@ -13,30 +12,34 @@ const NAV_ITEMS = [
   { href: '/pricing', label: '定价' },
 ];
 
+/**
+ * 顶部导航 —— 参照 image_demo/img_1.png：
+ * 左 logo（黑色方块字标）、右横向文字导航、当前页用**黑色下划线**标出，
+ * 整条 header 只有一条 1px 发丝线，不用阴影、不用药丸底色。
+ */
 export function SiteHeader() {
   const pathname = usePathname();
 
   return (
-    <header className="sticky top-0 z-40 w-full border-b border-ink-200 bg-ink-50/85 backdrop-blur-md">
-      <div className="mx-auto flex h-14 max-w-6xl items-center justify-between gap-6 px-4 sm:px-6">
-        {/* 品牌：中文用衬线体拿编辑气质，拉丁副名用无衬线小字形成对比 */}
-        <Link
-          href="/"
-          className="group flex shrink-0 items-center gap-2.5 rounded-lg focus-visible:outline-none"
-        >
-          <span className="flex h-7 w-7 items-center justify-center rounded-[9px] bg-brand-600 text-white transition-colors duration-200 ease-spring group-hover:bg-brand-700">
-            <FileScan className="h-4 w-4" aria-hidden strokeWidth={1.75} />
+    <header className="sticky top-0 z-40 w-full border-b border-ink-200 bg-white/95 backdrop-blur">
+      <div className="mx-auto flex h-[62px] max-w-[1180px] items-stretch justify-between gap-6 px-5 sm:px-8">
+        {/* 品牌：黑底白字方块 + 名称，参考图里 logo 是纯黑几何图形 */}
+        <Link href="/" className="group flex shrink-0 items-center gap-2.5 focus-visible:outline-none">
+          <span className="flex h-7 w-7 items-center justify-center bg-ink-950 text-[15px] font-extrabold leading-none text-white transition-colors duration-200 group-hover:bg-brand-500">
+            简
           </span>
-          <span className="font-serif text-[17px] font-semibold leading-none tracking-tight text-ink-900">
-            简甄
-            <span className="ml-1.5 font-sans text-[11px] font-normal tracking-wide text-ink-400">
+          <span className="flex items-baseline gap-1.5">
+            <span className="text-[17px] font-extrabold leading-none tracking-tighter text-ink-950">
+              简甄
+            </span>
+            <span className="text-[10px] font-medium uppercase tracking-[0.18em] text-ink-400">
               ZhenResume
             </span>
           </span>
         </Link>
 
-        {/* 当前页用珊瑚色下划线指示（而非药丸底色）：信息更轻，也更编辑化 */}
-        <nav className="flex items-center overflow-x-auto" aria-label="主导航">
+        {/* 导航：当前页用 2px 黑色下划线指示，与 header 底边对齐 */}
+        <nav className="flex items-stretch overflow-x-auto" aria-label="主导航">
           {NAV_ITEMS.map((item) => {
             const active = item.href === '/' ? pathname === '/' : pathname.startsWith(item.href);
             return (
@@ -45,16 +48,13 @@ export function SiteHeader() {
                 href={item.href}
                 aria-current={active ? 'page' : undefined}
                 className={cn(
-                  'relative flex h-14 shrink-0 items-center px-3 text-[13.5px] transition-colors duration-200 ease-spring',
-                  active ? 'text-ink-900' : 'text-ink-500 hover:text-ink-900',
+                  'relative flex shrink-0 items-center px-3.5 text-[13px] font-medium transition-colors duration-200 sm:px-4',
+                  active ? 'text-ink-950' : 'text-ink-400 hover:text-ink-950',
                 )}
               >
                 {item.label}
                 {active ? (
-                  <span
-                    className="absolute inset-x-2.5 bottom-0 h-[2px] rounded-full bg-brand-500"
-                    aria-hidden
-                  />
+                  <span className="absolute inset-x-0 bottom-0 h-[2px] bg-ink-950" aria-hidden />
                 ) : null}
               </Link>
             );

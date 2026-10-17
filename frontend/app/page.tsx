@@ -3,12 +3,11 @@
 import * as React from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { ArrowRight, FileSearch, ListChecks, Loader2, Target } from 'lucide-react';
+import { ArrowRight, Loader2 } from 'lucide-react';
 import { ApiError, createJd, createTask, uploadResume } from '@/lib/api';
 import { uploadGuardMessage } from '@/lib/upload-guard';
 import { Button } from '@/components/ui/button';
 import { buttonVariants } from '@/lib/button-variants';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { ErrorBanner } from '@/components/states';
 import UploadDropzone from '@/components/upload-dropzone';
@@ -30,58 +29,62 @@ const DIMENSIONS = [
   { label: '竞争力差距', weight: 15, note: '与岗位基准画像对比' },
   { label: '风险', weight: 10, note: '时间线、矛盾与夸大表述' },
 ];
-const MAX_WEIGHT = Math.max(...DIMENSIONS.map((d) => d.weight));
 
 const CAPABILITIES = [
   {
-    icon: FileSearch,
+    index: '01',
     title: '证据化',
-    description: '每条问题都锚定简历原文的引用与字符区间，能定位、可核对，不做凭空评价。',
+    description:
+      '每条问题都锚定简历原文的引用与字符区间，能定位、可核对，不做凭空评价。结论级引用由 Agentic 检索产出，可回溯到知识库切片。',
   },
   {
-    icon: ListChecks,
+    index: '02',
     title: '可执行',
-    description: '左原文、右改写句，逐条给出可直接复制的表达，并附下一步行动清单。',
+    description:
+      '左原文、右改写句，逐条给出可直接复制的表达，并附下一步行动清单。改写句里的数字必须来自原文，不允许编造。',
   },
   {
-    icon: Target,
+    index: '03',
     title: '越用越准',
-    description: '结合岗位能力模型与行业知识库检索增强，随知识库沉淀持续提升判断质量。',
+    description:
+      '结合岗位能力模型与行业知识库检索增强；Agent 自己决定检索方向与轮次，报告里能看到它检索了什么、哪些方向没有依据。',
   },
+];
+
+const PIPELINE = [
+  '解析简历',
+  '解析 JD',
+  '岗位匹配',
+  'ATS 检测',
+  '影响力评估',
+  '风险扫描',
+  '改写建议',
+  '质量检查',
 ];
 
 function describeError(error: unknown): string {
   if (error instanceof ApiError) return error.message;
   if (error instanceof Error) return error.message;
-  return '发生未知错误，请稍后重试';
+  return '请求失败，请稍后重试。';
 }
 
 export default function HomePage() {
   const router = useRouter();
   const [file, setFile] = React.useState<File | null>(null);
+  const [fileError, setFileError] = React.useState<string | null>(null);
   const [jdText, setJdText] = React.useState('');
   const [jdTitle, setJdTitle] = React.useState('');
   const [company, setCompany] = React.useState('');
   const [phase, setPhase] = React.useState<Phase>('idle');
   const [error, setError] = React.useState<string | null>(null);
-  const [fileError, setFileError] = React.useState<string | null>(null);
 
   const busy = phase !== 'idle';
   const jdLength = jdText.trim().length;
 
-  const handleSubmit = async (event: React.FormEvent) => {
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (busy) return;
-
+    if (!file || busy) return;
     setError(null);
-    if (!file) {
-      setError('请先选择一份简历文件（PDF / DOCX / PNG / JPG / TXT，≤10MB）。');
-      return;
-    }
-    if (jdLength < 20) {
-      setError('请粘贴目标岗位 JD，至少 20 个字，便于做岗位匹配分析。');
-      return;
-    }
 
     try {
       setPhase('uploading');
@@ -116,89 +119,113 @@ export default function HomePage() {
 
   return (
     <div className="space-y-16 sm:space-y-20">
-      {/* Hero：左对齐 + 非对称，避免"居中大标题 + 三张等宽卡片"的通用模板观感 */}
-      <section className="grid gap-10 pt-2 lg:grid-cols-12 lg:gap-14 lg:pt-6">
+      {/* ---------------------------------------------------------------- */}
+      {/* Hero：大字号 + 非对称分栏，左标题右"评分口径"表格                  */}
+      {/* ---------------------------------------------------------------- */}
+      <section className="grid gap-12 lg:grid-cols-12 lg:gap-16">
         <div className="animate-rise lg:col-span-7">
-          <p className="inline-flex items-center gap-2 text-xs font-medium tracking-wide text-ink-500">
-            <span className="h-1.5 w-1.5 rounded-full bg-brand-500" aria-hidden />
+          <p className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-500">
+            <span className="h-1.5 w-1.5 bg-brand-500" aria-hidden />
             上传即分析 · 无需注册即可试用
           </p>
 
-          <h1 className="mt-5 text-[34px] leading-[1.12] sm:text-[44px] lg:text-[52px]">
+          <h1 className="mt-6 text-[46px] leading-[0.95] tracking-tightest sm:text-[64px] lg:text-[76px]">
             60 秒诊断简历，
+            <br />
+            <span className="text-brand-500">让每段经历</span>
             <br className="hidden sm:block" />
-            让每段经历都被看见
+            都被看见。
           </h1>
 
-          <p className="mt-6 max-w-xl text-[15px] leading-relaxed text-ink-600">
+          <p className="mt-7 max-w-xl text-[15px] leading-relaxed text-ink-600">
             简甄用 8 个 Agent 依次完成解析、岗位匹配、ATS 检测、影响力评估、风险扫描与改写建议，
-            给出可定位、可执行的诊断结论 —— 每条结论都能追溯回你的简历原文。
+            给出可定位、可执行的诊断结论 —— 每条结论都能追溯回你的简历原文，
+            关键结论还会附上知识库依据。
           </p>
 
-          <div className="mt-8 flex flex-wrap items-center gap-3">
-            <a href="#diagnose" className={buttonVariants({ size: 'lg' })}>
+          <div className="mt-9 flex flex-wrap items-center gap-0 border border-ink-950">
+            <a
+              href="#diagnose"
+              className="inline-flex h-12 flex-1 items-center justify-center gap-2 bg-ink-950 px-6 text-[13px] font-semibold uppercase tracking-[0.06em] text-white transition-colors hover:bg-brand-500 sm:flex-none"
+            >
               开始诊断
               <ArrowRight className="h-4 w-4" aria-hidden />
             </a>
-            <Link href="/editor" className={buttonVariants({ variant: 'outline', size: 'lg' })}>
+            <Link
+              href="/editor"
+              className="inline-flex h-12 flex-1 items-center justify-center whitespace-nowrap border-l border-ink-950 bg-white px-6 text-[13px] font-semibold uppercase tracking-[0.06em] text-ink-950 transition-colors hover:bg-ink-100 sm:flex-none"
+            >
               用模板从零写简历
             </Link>
           </div>
 
-          <p className="mt-4 max-w-lg text-xs leading-relaxed text-ink-400">
+          <p className="mt-4 max-w-lg text-[11px] leading-relaxed text-ink-400">
             手上还没有简历文件？编辑器里有 4 套模板和逐栏写作提示，写完可以直接发起诊断。
           </p>
+
+          {/* 流水线：8 格等宽一行。用 grid-cols-8 + gap-px 保底，
+              不用 flex-wrap —— 8 格在 7 列宽度下必换行，末格会孤零零掉到下一行。 */}
+          <div className="mt-10 grid grid-cols-8 gap-px border border-ink-200 bg-ink-200">
+            {PIPELINE.map((step, index) => (
+              <span
+                key={step}
+                className="flex flex-col gap-1 bg-white px-1.5 py-2 text-center text-[10px] leading-tight text-ink-500 sm:text-[11px]"
+              >
+                <span className="tnum text-[10px] font-bold text-ink-300">
+                  {String(index + 1).padStart(2, '0')}
+                </span>
+                <span className="whitespace-nowrap">{step}</span>
+              </span>
+            ))}
+          </div>
         </div>
 
-        {/* 评分口径：既填补 hero 右侧留白，也让"分数从哪来"变得透明 */}
-        <aside className="lg:col-span-5 lg:pt-1">
-          <div className="rounded-card border border-ink-200 bg-white p-5 sm:p-6">
-            <h2 className="font-serif text-[15px] font-semibold tracking-tight text-ink-900">
-              报告由这五个维度合成
-            </h2>
-            <p className="mt-1.5 text-xs leading-relaxed text-ink-500">
-              每一维度都由规则引擎按客观比率计算。同一份简历重复诊断分数一致，因此改完可以对比变化。
-            </p>
-            <dl className="mt-5 space-y-4">
+        {/* 评分口径：右栏做成"表格"而不是卡片，贴参考图的数据表观感 */}
+        <aside className="lg:col-span-5">
+          <div className="border border-ink-200">
+            <div className="flex items-baseline justify-between gap-3 border-b border-ink-200 bg-ink-50 px-4 py-3">
+              <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-ink-900">
+                报告由这五个维度合成
+              </h2>
+              <span className="tnum text-[11px] font-semibold text-ink-400">100%</span>
+            </div>
+
+            <dl className="divide-y divide-ink-200">
               {DIMENSIONS.map((item) => (
-                <div key={item.label}>
-                  <div className="flex items-baseline justify-between gap-3">
-                    <dt className="text-[13px] font-medium text-ink-800">{item.label}</dt>
-                    <dd className="tnum text-[13px] font-semibold text-ink-400">{item.weight}%</dd>
-                  </div>
-                  <div className="mt-1.5 flex items-center gap-3">
-                    {/* 条长按最大权重归一化，让维度之间的差别看得清 */}
-                    <div className="h-1 flex-1 overflow-hidden rounded-full bg-ink-100">
-                      <div
-                        className="h-full rounded-full bg-brand-400"
-                        style={{ width: `${(item.weight / MAX_WEIGHT) * 100}%` }}
-                      />
-                    </div>
-                    <span className="w-[10.5rem] shrink-0 text-right text-[11px] leading-tight text-ink-400">
-                      {item.note}
-                    </span>
-                  </div>
+                <div key={item.label} className="grid grid-cols-[1fr_auto] gap-x-4 px-4 py-3">
+                  <dt className="text-[13px] font-semibold text-ink-900">{item.label}</dt>
+                  <dd className="tnum text-[13px] font-bold text-ink-950">{item.weight}%</dd>
+                  <p className="col-span-2 mt-0.5 text-[11px] leading-relaxed text-ink-400">
+                    {item.note}
+                  </p>
                 </div>
               ))}
             </dl>
+
+            <p className="border-t border-ink-200 px-4 py-3 text-[11px] leading-relaxed text-ink-500">
+              每一维度都由规则引擎按客观比率计算，同一份简历重复诊断分数一致；
+              Agent 只负责补依据，不参与打分。
+            </p>
           </div>
         </aside>
       </section>
 
-      {/* 诊断入口 */}
-      <section id="diagnose" className="scroll-mt-20">
-        <div className="border-t border-ink-200 pt-10">
-          <div className="flex flex-wrap items-end justify-between gap-4">
-            <div>
-              <p className="text-xs font-medium tracking-wide text-ink-400">诊断入口</p>
-              <h2 className="mt-2 text-[26px] leading-tight sm:text-[30px]">
-                上传简历，粘贴目标岗位
-              </h2>
-            </div>
-            <p className="max-w-sm text-xs leading-relaxed text-ink-400">
-              简历数据只用于本次诊断，可随时删除；诊断结果不构成录用决策依据。
+      {/* ---------------------------------------------------------------- */}
+      {/* 诊断入口：两步，左右并排；表单控件一律直角细线                    */}
+      {/* ---------------------------------------------------------------- */}
+      <section id="diagnose" className="scroll-mt-24">
+        <div className="flex flex-wrap items-end justify-between gap-4 border-t border-ink-200 pt-8">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-400">
+              诊断入口
             </p>
+            <h2 className="mt-2 text-[30px] leading-none sm:text-[38px]">
+              上传简历，粘贴目标岗位。
+            </h2>
           </div>
+          <p className="max-w-sm text-[11px] leading-relaxed text-ink-400">
+            简历数据只用于本次诊断，可随时删除；诊断结果不构成录用决策依据。
+          </p>
         </div>
 
         {error ? (
@@ -207,40 +234,44 @@ export default function HomePage() {
           </div>
         ) : null}
 
-        <form onSubmit={handleSubmit} className="mt-6 grid gap-5 lg:grid-cols-2">
-          <Card>
-            <CardHeader>
-              <p className="tnum text-xs font-medium text-brand-600">01</p>
-              <CardTitle>上传简历</CardTitle>
-              <p className="text-sm text-ink-500">支持拖拽，单份不超过 10MB。</p>
-            </CardHeader>
-            <CardContent>
+        <form onSubmit={handleSubmit} className="mt-8 grid gap-px border border-ink-950 bg-ink-950 lg:grid-cols-2">
+          <div className="bg-white p-5 sm:p-6">
+            <div className="flex items-baseline justify-between gap-3 border-b border-ink-200 pb-3">
+              <h3 className="text-[11px] font-bold uppercase tracking-[0.14em] text-ink-900">
+                01 / 上传简历
+              </h3>
+              <span className="text-[11px] text-ink-400">单份 ≤ 10MB</span>
+            </div>
+            <div className="pt-5">
               <UploadDropzone
                 file={file}
                 onFileChange={setFile}
                 onError={setFileError}
                 disabled={busy}
               />
-            </CardContent>
-          </Card>
+            </div>
+          </div>
 
-          <Card>
-            <CardHeader>
-              <p className="tnum text-xs font-medium text-brand-600">02</p>
-              <CardTitle>粘贴目标岗位 JD</CardTitle>
-              <p className="text-sm text-ink-500">
-                粘贴岗位职责与要求原文，用于计算匹配度与缺失关键词。
-              </p>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="grid gap-3 sm:grid-cols-2">
+          <div className="bg-white p-5 sm:p-6">
+            <div className="flex items-baseline justify-between gap-3 border-b border-ink-200 pb-3">
+              <h3 className="text-[11px] font-bold uppercase tracking-[0.14em] text-ink-900">
+                02 / 粘贴目标岗位 JD
+              </h3>
+              <span className="tnum text-[11px] text-ink-400">
+                {jdLength} 字
+                {jdLength > 0 && jdLength < 20 ? '（至少 20 字）' : ''}
+              </span>
+            </div>
+
+            <div className="space-y-3 pt-5">
+              <div className="grid gap-px bg-ink-200 sm:grid-cols-2">
                 <input
                   value={jdTitle}
                   onChange={(event) => setJdTitle(event.target.value)}
                   disabled={busy}
-                  placeholder="岗位名称（选填），如：后端开发工程师"
+                  placeholder="岗位名称（选填）"
                   aria-label="岗位名称"
-                  className="h-10 w-full rounded-[10px] border border-ink-300 bg-white px-3 text-sm text-ink-900 transition-colors duration-200 ease-spring placeholder:text-ink-400 hover:border-ink-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/15 disabled:bg-ink-50"
+                  className="h-10 w-full border-0 bg-white px-3 text-sm text-ink-950 placeholder:text-ink-400 focus:outline-none disabled:bg-ink-50"
                 />
                 <input
                   value={company}
@@ -248,25 +279,21 @@ export default function HomePage() {
                   disabled={busy}
                   placeholder="公司名称（选填）"
                   aria-label="公司名称"
-                  className="h-10 w-full rounded-[10px] border border-ink-300 bg-white px-3 text-sm text-ink-900 transition-colors duration-200 ease-spring placeholder:text-ink-400 hover:border-ink-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/15 disabled:bg-ink-50"
+                  className="h-10 w-full border-0 bg-white px-3 text-sm text-ink-950 placeholder:text-ink-400 focus:outline-none disabled:bg-ink-50"
                 />
               </div>
               <Textarea
                 value={jdText}
                 onChange={(event) => setJdText(event.target.value)}
                 disabled={busy}
-                rows={9}
+                rows={8}
                 placeholder={'岗位职责：……\n任职要求：……\n例如：熟悉 Python / MySQL / Redis，有高并发系统经验优先。'}
               />
-              <p className="tnum text-right text-xs text-ink-400">
-                {jdLength} 字
-                {jdLength > 0 && jdLength < 20 ? '（还需至少 20 字）' : ''}
-              </p>
-            </CardContent>
-          </Card>
+            </div>
+          </div>
 
-          <div className="lg:col-span-2">
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <div className="bg-white p-5 sm:col-span-2 sm:p-6">
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
               <Button
                 type="submit"
                 size="lg"
@@ -285,7 +312,7 @@ export default function HomePage() {
                   </>
                 )}
               </Button>
-              <p className="text-xs leading-relaxed text-ink-400">
+              <p className="text-[11px] leading-relaxed text-ink-400">
                 通常需要 20–60 秒，期间可在进度页看到每个 Agent 的实时状态。
               </p>
             </div>
@@ -293,32 +320,61 @@ export default function HomePage() {
         </form>
       </section>
 
-      {/* 能力说明：改为带分隔线的列表，取代三张等宽卡片 */}
+      {/* ---------------------------------------------------------------- */}
+      {/* 能力说明：编号列表 + 反白小块，取代三张等宽卡片                    */}
+      {/* ---------------------------------------------------------------- */}
       <section>
-        <div className="border-t border-ink-200 pt-10">
-          <p className="text-xs font-medium tracking-wide text-ink-400">为什么不是打分器</p>
-          <h2 className="mt-2 max-w-2xl text-[26px] leading-tight sm:text-[30px]">
-            给结论，也给得出这个结论的依据
-          </h2>
+        <div className="flex flex-wrap items-end justify-between gap-4 border-t border-ink-200 pt-8">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-400">
+              为什么不是打分器
+            </p>
+            <h2 className="mt-2 max-w-2xl text-[30px] leading-none sm:text-[38px]">
+              给结论，也给得出这个结论的依据。
+            </h2>
+          </div>
+          <Link href="/pricing" className="arrow-cta text-[12px] font-semibold text-ink-950">
+            查看定价
+          </Link>
         </div>
 
         <dl className="mt-8 divide-y divide-ink-200 border-y border-ink-200">
-          {CAPABILITIES.map((item) => {
-            const Icon = item.icon;
-            return (
-              <div
-                key={item.title}
-                className="grid gap-3 py-6 sm:grid-cols-[auto_9rem_1fr] sm:items-baseline sm:gap-6"
-              >
-                <span className="flex h-8 w-8 items-center justify-center rounded-[9px] bg-brand-50 text-brand-600 ring-1 ring-inset ring-brand-100">
-                  <Icon className="h-4 w-4" aria-hidden strokeWidth={1.75} />
-                </span>
-                <dt className="text-[15px] font-semibold text-ink-900">{item.title}</dt>
-                <dd className="max-w-2xl text-sm leading-relaxed text-ink-600">{item.description}</dd>
-              </div>
-            );
-          })}
+          {CAPABILITIES.map((item) => (
+            <div
+              key={item.title}
+              className="grid gap-3 py-7 sm:grid-cols-[3rem_8rem_1fr] sm:items-baseline sm:gap-6"
+            >
+              <span className="chip-invert w-fit">{item.index}</span>
+              <dt className="text-[18px] font-extrabold tracking-tight text-ink-950">
+                {item.title}
+              </dt>
+              <dd className="max-w-2xl text-[13px] leading-relaxed text-ink-600">
+                {item.description}
+              </dd>
+            </div>
+          ))}
         </dl>
+      </section>
+
+      {/* ---------------------------------------------------------------- */}
+      {/* 结尾 CTA：黑底通栏，参考图的黑白对比                                 */}
+      {/* ---------------------------------------------------------------- */}
+      <section className="flex flex-wrap items-center justify-between gap-6 bg-ink-950 px-6 py-10 sm:px-10">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-400">
+            现在开始
+          </p>
+          <h2 className="mt-2 max-w-xl text-[26px] leading-tight text-white sm:text-[32px]">
+            这一次，把简历交给能给出证据的诊断。
+          </h2>
+        </div>
+        <a
+          href="#diagnose"
+          className="inline-flex h-12 items-center justify-center border border-white bg-white px-7 text-[13px] font-semibold uppercase tracking-[0.06em] text-ink-950 transition-colors hover:border-brand-500 hover:bg-brand-500 hover:text-white"
+        >
+          上传简历
+          <ArrowRight className="ml-2 h-4 w-4" aria-hidden />
+        </a>
       </section>
     </div>
   );

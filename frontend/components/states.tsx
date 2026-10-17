@@ -18,7 +18,7 @@ export function ErrorBanner({
     <div
       role="alert"
       className={cn(
-        'flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700',
+        'flex flex-wrap items-center justify-between gap-3 border border-red-500 bg-red-50 px-4 py-3 text-[13px] text-red-700',
         className,
       )}
     >
@@ -27,7 +27,7 @@ export function ErrorBanner({
         <span className="break-words">{message}</span>
       </span>
       {onRetry ? (
-        <Button size="sm" variant="outline" onClick={onRetry} className="border-red-200 text-red-700">
+        <Button size="sm" variant="outline" onClick={onRetry} className="border-red-500 text-red-700">
           <RotateCcw className="h-3.5 w-3.5" aria-hidden />
           重试
         </Button>
@@ -51,12 +51,12 @@ export function EmptyState({
   return (
     <div
       className={cn(
-        'flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-slate-300 bg-slate-50/60 px-6 py-10 text-center',
+        'flex flex-col items-center justify-center gap-2 border border-dashed border-ink-300 bg-ink-50 px-6 py-12 text-center',
         className,
       )}
     >
-      <p className="text-sm font-medium text-slate-700">{title}</p>
-      {description ? <p className="max-w-md text-xs text-slate-500">{description}</p> : null}
+      <p className="text-[15px] font-bold tracking-tight text-ink-950">{title}</p>
+      {description ? <p className="max-w-md text-[12px] leading-relaxed text-ink-500">{description}</p> : null}
       {action}
     </div>
   );
@@ -83,7 +83,7 @@ export function LoadingBlock({
 /** 简洁的页内 spinner + 文案。 */
 export function InlineSpinner({ label }: { label: string }) {
   return (
-    <div className="flex items-center gap-2 text-sm text-slate-500">
+    <div className="flex items-center gap-2 text-[12px] text-ink-500">
       <span
         className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-300 border-t-brand-600"
         aria-hidden

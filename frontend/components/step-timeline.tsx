@@ -39,27 +39,27 @@ function formatTokens(tokens: number | null | undefined): string {
 function StatusIcon({ status }: { status: StepStatus }) {
   if (status === 'done') {
     return (
-      <span className="flex h-6 w-6 items-center justify-center rounded-full bg-green-100 text-green-700">
+      <span className="flex h-6 w-6 items-center justify-center bg-green-600 text-white">
         <Check className="h-3.5 w-3.5" aria-hidden />
       </span>
     );
   }
   if (status === 'running') {
     return (
-      <span className="flex h-6 w-6 items-center justify-center rounded-full bg-brand-100 text-brand-700">
+      <span className="flex h-6 w-6 items-center justify-center bg-brand-500 text-white">
         <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
       </span>
     );
   }
   if (status === 'failed') {
     return (
-      <span className="flex h-6 w-6 items-center justify-center rounded-full bg-red-100 text-red-700">
+      <span className="flex h-6 w-6 items-center justify-center bg-red-600 text-white">
         <X className="h-3.5 w-3.5" aria-hidden />
       </span>
     );
   }
   return (
-    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-slate-100 text-slate-400">
+    <span className="flex h-6 w-6 items-center justify-center border border-ink-300 bg-white text-ink-400">
       <CircleDashed className="h-3.5 w-3.5" aria-hidden />
     </span>
   );
@@ -106,7 +106,7 @@ export function StepTimeline({ steps, className }: StepTimelineProps) {
               <span
                 className={cn(
                   'absolute left-3 top-7 h-[calc(100%-1.5rem)] w-px',
-                  step.status === 'done' ? 'bg-green-200' : 'bg-slate-200',
+                  step.status === 'done' ? 'bg-ink-300' : 'bg-ink-200',
                 )}
                 aria-hidden
               />
@@ -114,18 +114,18 @@ export function StepTimeline({ steps, className }: StepTimelineProps) {
             <StatusIcon status={step.status} />
             <div className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-x-3 gap-y-1 pt-0.5">
               <div className="flex min-w-0 items-center gap-2">
-                <span className="font-mono text-xs text-slate-400">{index + 1}</span>
+                <span className="tnum text-[11px] font-bold text-ink-300">{String(index + 1).padStart(2, '0')}</span>
                 <span
                   className={cn(
-                    'truncate text-sm',
-                    step.status === 'pending' ? 'text-slate-500' : 'font-medium text-slate-900',
+                    'truncate text-[13px]',
+                    step.status === 'pending' ? 'text-ink-400' : 'font-bold text-ink-950',
                   )}
                 >
                   {label}
                 </span>
                 <span
                   className={cn(
-                    'shrink-0 text-xs',
+                    'shrink-0 text-[10.5px] font-semibold uppercase tracking-[0.08em]',
                     step.status === 'running' && 'text-brand-600',
                     step.status === 'done' && 'text-green-600',
                     step.status === 'failed' && 'text-red-600',
@@ -135,7 +135,7 @@ export function StepTimeline({ steps, className }: StepTimelineProps) {
                   {STATUS_TEXT[step.status]}
                 </span>
               </div>
-              <div className="flex items-center gap-3 font-mono text-xs text-slate-500">
+              <div className="flex items-center gap-3 text-[11px] text-ink-400">
                 <span>耗时 {formatLatency(step.latency_ms)}</span>
                 <span>token {formatTokens(step.tokens)}</span>
               </div>

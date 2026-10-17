@@ -6,42 +6,43 @@ export type ButtonVariant =
   | 'outline'
   | 'ghost'
   | 'destructive'
-  | 'link';
+  | 'link'
+  | 'brand';
 
 export type ButtonSize = 'sm' | 'default' | 'lg' | 'icon';
 
 /**
- * 按钮变体。
- *
- * 设计要点：
- * - 主按钮用 `brand-600`（陶土）而非 `brand-500`（珊瑚）作为填充色：白字对比度更够；
- *   `brand-500` 留给文字、图标、焦点环，保持签名色的观感。
- * - outline / ghost 以暖灰发丝边框和极轻底色表达层级，不用重阴影。
- * - 全部变体都有 hover / active / focus-visible 三态，`active:scale-[0.98]` 模拟物理按压。
+ * 按钮变体 —— 参照 image_demo/img_1.png：
+ * - 主按钮 = **纯黑底白字**（参考图里 "Get tickets" / "Explore skill" 就是这个）；
+ * - 次按钮 = 白底 + 1px 黑线，hover 反色（黑底白字）；
+ * - 紫色只用于链接/强调，不做大面积按钮填充（保持黑白主导）。
+ * - 全部变体都有 hover / active / focus-visible 三态，active 用 1px 下移模拟按压。
  */
 export const BUTTON_VARIANT_CLASSES: Record<ButtonVariant, string> = {
   default:
-    'bg-brand-600 text-white shadow-sm hover:bg-brand-700 active:bg-brand-800 focus-visible:outline-brand-600',
+    'border border-ink-950 bg-ink-950 text-white hover:bg-white hover:text-ink-950 active:translate-y-px focus-visible:outline-ink-950',
+  brand:
+    'border border-brand-500 bg-brand-500 text-white hover:bg-white hover:text-brand-600 hover:border-brand-500 active:translate-y-px focus-visible:outline-brand-600',
   secondary:
-    'bg-ink-100 text-ink-800 hover:bg-ink-200 active:bg-ink-300/70 focus-visible:outline-ink-400',
+    'border border-ink-950 bg-white text-ink-950 hover:bg-ink-950 hover:text-white active:translate-y-px focus-visible:outline-ink-950',
   outline:
-    'border border-ink-300 bg-white text-ink-700 hover:border-ink-400 hover:bg-ink-50 hover:text-ink-900 focus-visible:outline-brand-500',
+    'border border-ink-300 bg-white text-ink-700 hover:border-ink-950 hover:text-ink-950 active:translate-y-px focus-visible:outline-ink-950',
   ghost:
-    'text-ink-600 hover:bg-ink-100 hover:text-ink-900 focus-visible:outline-ink-400',
+    'border border-transparent bg-transparent text-ink-600 hover:bg-ink-100 hover:text-ink-950 focus-visible:outline-ink-950',
   destructive:
-    'bg-red-600 text-white shadow-sm hover:bg-red-700 active:bg-red-800 focus-visible:outline-red-600',
-  link: 'text-brand-700 underline-offset-4 hover:text-brand-800 hover:underline focus-visible:outline-brand-600',
+    'border border-red-600 bg-red-600 text-white hover:bg-white hover:text-red-700 active:translate-y-px focus-visible:outline-red-600',
+  link: 'border border-transparent text-brand-600 underline-offset-4 hover:text-brand-500 hover:underline focus-visible:outline-brand-500',
 };
 
 export const BUTTON_SIZE_CLASSES: Record<ButtonSize, string> = {
-  sm: 'h-8 rounded-lg px-3 text-xs',
-  default: 'h-10 rounded-[10px] px-4 text-sm',
-  lg: 'h-11 rounded-[10px] px-6 text-sm',
-  icon: 'h-9 w-9 rounded-[10px]',
+  sm: 'h-8 px-3 text-[12px]',
+  default: 'h-10 px-4 text-sm',
+  lg: 'h-11 px-6 text-sm',
+  icon: 'h-9 w-9',
 };
 
 export const BUTTON_BASE_CLASSES =
-  'inline-flex select-none items-center justify-center gap-2 whitespace-nowrap font-medium transition-all duration-200 ease-spring focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 active:scale-[0.98] disabled:pointer-events-none disabled:opacity-50 disabled:active:scale-100';
+  'inline-flex select-none items-center justify-center gap-2 whitespace-nowrap font-semibold uppercase tracking-[0.04em] transition-all duration-200 ease-snap focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 disabled:pointer-events-none disabled:opacity-40';
 
 export interface ButtonVariantOptions {
   variant?: ButtonVariant;

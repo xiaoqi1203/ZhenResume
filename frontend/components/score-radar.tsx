@@ -84,13 +84,13 @@ export function ScoreRadar({ dimensions, className }: ScoreRadarProps) {
 
         <polygon
           points={toPolygon(dataPoints)}
-          className="fill-brand-500/15 stroke-brand-500"
+          className="fill-brand-500/20 stroke-brand-500"
           strokeWidth={2}
           strokeLinejoin="round"
         />
 
         {dataPoints.map(([x, y], index) => (
-          <circle key={`dot-${index}`} cx={x} cy={y} r={3.2} className="fill-brand-500" />
+          <circle key={`dot-${index}`} cx={x} cy={y} r={3.2} className="fill-ink-950" />
         ))}
 
         {dimensions.map((dimension, index) => {
@@ -134,9 +134,9 @@ export function ScoreRadar({ dimensions, className }: ScoreRadarProps) {
                 <span className="font-medium text-ink-600">{dimension.label}</span>
                 <span className="tnum text-ink-900">{value}</span>
               </div>
-              <div className="h-1.5 w-full overflow-hidden rounded-full bg-ink-100">
+              <div className="h-1 w-full overflow-hidden bg-ink-200">
                 <div
-                  className="h-full rounded-full bg-brand-500"
+                  className="h-full bg-ink-950"
                   style={{ width: `${Math.min(100, Math.max(0, value))}%` }}
                 />
               </div>

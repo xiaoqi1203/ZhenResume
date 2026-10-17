@@ -196,7 +196,13 @@ export default function PricingPage() {
     const highlighted = plan.code === 'single_deep' || plan.code === 'monthly_pro';
     const buying = buyingCode === plan.code;
     return (
-      <Card key={plan.code} className={cn('flex flex-col', highlighted && 'border-brand-300 shadow-md')}>
+      <Card
+              key={plan.code}
+              className={cn(
+                'flex flex-col',
+                highlighted && 'border-ink-950 shadow-hard',
+              )}
+            >
         <CardHeader>
           <div className="flex items-center justify-between gap-2">
             <CardTitle>{plan.name}</CardTitle>
@@ -216,7 +222,7 @@ export default function PricingPage() {
           <ul className="space-y-2">
             {plan.features.map((feature) => (
               <li key={feature} className="flex items-start gap-2 text-sm text-ink-700">
-                <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-green-600" aria-hidden />
+                <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ink-950" aria-hidden strokeWidth={3} />
                 {feature}
               </li>
             ))}
@@ -248,7 +254,7 @@ export default function PricingPage() {
     <div className="space-y-8">
       <header className="space-y-3 border-b border-ink-200 pb-8">
         <p className="inline-flex items-center gap-2 text-xs font-medium tracking-wide text-ink-500">
-          <span className="h-1.5 w-1.5 rounded-full bg-brand-500" aria-hidden />
+          <span className="h-1.5 w-1.5 bg-brand-500" aria-hidden />
           MVP 阶段为 Mock 支付页
         </p>
         <h1 className="text-[30px] leading-tight sm:text-[36px]">选择适合你的诊断套餐</h1>
@@ -267,7 +273,7 @@ export default function PricingPage() {
       {error ? <ErrorBanner message={error} onRetry={() => void load()} /> : null}
 
       {notice && !usingFallback ? (
-        <div className="rounded-[10px] border border-brand-100 bg-brand-50/60 px-4 py-3 text-sm text-brand-900">
+        <div className="border border-ink-300 bg-ink-50 px-4 py-3 text-[12px] leading-relaxed text-ink-700">
           {notice}
         </div>
       ) : null}
