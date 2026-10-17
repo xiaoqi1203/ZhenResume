@@ -14,12 +14,46 @@ Pillow==11.1.0
 # （langgraph-api 是 Elastic-2.0，生产需 license key + 外联 beacon）
 langgraph==1.2.15
 langgraph-checkpoint-sqlite==3.1.2
-# 生产切 PostgreSQL checkpointer 时再启用（依赖 psycopg3，不是 asyncpg）：
-# langgraph-checkpoint-postgres==3.2.0
-# psycopg[binary]==3.2.3
+# PostgreSQL checkpointer：`LANGGRAPH_CHECKPOINT=postgres` 时必须装（否则
+# make_checkpointer() 在 `from langgraph.checkpoint.postgres.aio import ...` 处
+# ModuleNotFoundError，表现为"工作流异常终止"、8 步全 pending）。
+# 容器化部署建议用它而不是 sqlite：sqlite 文件随容器重建即丢，PG 才持久。
+# 依赖 psycopg3（不是 asyncpg），与下面的 psycopg[binary] 同源。
+langgraph-checkpoint-postgres==3.2.0
+
+# ---- Agent 封装（P2-c，LangChain 1.x）----
+# 版本集合由 `pip install --dry-run` 解析确认互相兼容，并已用 174 项断言回归三条路径：
+#   legacy / LangGraph 串行 / LangGraph 并行+checkpoint
+# ⚠️ 不要把 langchain 单独升级：它的 langchain-core 约束会反向牵动 langgraph。
+#    改版本前请先 dry-run，例如：
+#      pip install --dry-run "langgraph==1.2.15" "langchain==<ver>" "langchain-openai"
+langchain==1.4.6
+langchain-openai==1.7.2
+# 下面三个是 langchain 的传递依赖；显式 pin 是为了防止重新安装时被解析到不兼容版本。
+# langgraph 的传递依赖集（checkpoint / prebuilt / sdk）也必须与 langgraph 1.2.15 对齐：
+# 实测曾出现 langgraph 1.2.15 装到一半失败、残留 1.1.10 + ~anggraph-1.2.15.dist-info 的脏状态。
+langchain-core==1.6.10
+openai==3.31.0
+langgraph-prebuilt==1.1.1
+langgraph-sdk==0.4.7
 
 # ---- 执行模型：Celery + Redis（生产；把工作流执行从 web 进程搬出去）----
 celery[redis]==5.6.3
 redis==5.3.1
 # PostgreSQL 驱动（SQLAlchemy 用 psycopg3 方言：postgresql+psycopg://）
 psycopg[binary]==3.3.6
+
+# ---- 本地 OCR（可选，**不需要任何外部 API/Key**）----
+# 图片简历（PNG/JPG）与扫描版 PDF 依赖本机 OCR 引擎；不装则这两类输入明确降级
+# （返回空文本 + extract_note，前端会拦下来提示换格式，不会静默产出垃圾报告）。
+# 装任意一个即可自动启用，装完跑 `python -m scripts.check_ocr` 验证：
+#
+#   ① 推荐（纯 pip、无系统组件、中文效果好；依赖合计约 70MB）：
+#        rapidocr-onnxruntime==1.4.4     # 自带 PP-OCR 中英文模型，onnxruntime 本地推理
+#   ② 轻量（系统二进制 + 薄封装；Linux 上 apt 约 15MB）：
+#        pytesseract==0.3.13             # 另需 apt install tesseract-ocr tesseract-ocr-chi-sim
+#
+# ⚠️ 刻意**不写进上面的默认依赖**：它只影响图片/扫描件两类输入，
+#    不该让只用 PDF/DOCX 的部署也背上 70MB 依赖。
+#    Docker 部署见 backend/Dockerfile 末尾「可选：让容器内也能识别图片简历 / 扫描版 PDF」段。
+

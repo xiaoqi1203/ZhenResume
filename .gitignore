@@ -8,6 +8,18 @@ venv/
 # 运行期数据（含用户简历原文，绝不入库）
 backend/data/
 backend/.env
+backend/.env.bak*
+# 本机 Docker 部署变量（含 PG/Redis 密码）
+.env.local
+.env.local-deploy
+
+# 评测产物：可重跑生成，且部分含真实简历原文（隐私）
+# 保留：eval/fixtures/ 与 eval/sort_fixtures/（合成夹具，是 ground truth）
+# 排除：DB 导出快照、含 raw_text 的标注骨架、运行结果与 LLM 判定缓存、人工预标注表
+backend/eval/source_*.jsonl
+backend/eval/agentic_labels.jsonl
+backend/eval/runs/
+backend/labels/
 
 # 视觉自查产物（无头浏览器截图与临时裁图，仅供设计迭代）
 .shots/
