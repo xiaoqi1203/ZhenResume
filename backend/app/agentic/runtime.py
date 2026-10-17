@@ -219,6 +219,8 @@ class _BudgetedRunner(ToolRunner):
         self.kb_requested = 0
         self.kb_executed = 0
         self.kb_blocked = 0
+        # 每次实际执行的检索命中了哪些切片（评测"检索质量"与前端观测都要用）
+        self.kb_hits: list[dict] = []
 
     async def invoke(self, name: str, arguments: dict | None) -> ToolResult:  # type: ignore[override]
         if name == "kb_search":
@@ -237,7 +239,16 @@ class _BudgetedRunner(ToolRunner):
                     digest="blocked:kb_search",
                 )
             self.kb_executed += 1
-        return await super().invoke(name, arguments)
+        result = await super().invoke(name, arguments)
+        if name == "kb_search" and result.ok:
+            hits = (result.data or {}).get("hits") or []
+            self.kb_hits.append(
+                {
+                    "query": str((arguments or {}).get("query") or ""),
+                    "chunk_ids": [h.get("chunk_id") for h in hits if h.get("chunk_id")],
+                }
+            )
+        return result
 
 
 class BaseAgent:
@@ -331,6 +342,8 @@ class BaseAgent:
             "retrieval_rounds": runner.kb_executed,
             "retrieval_blocked": runner.kb_blocked,
             "retrieval_queries": [str((e["args"] or {}).get("query") or "") for e in events if e["name"] == "kb_search"],
+            # 每次执行的 query + 命中切片（评测用；fixed 链路没有这个字段）
+            "retrieval_hits": runner.kb_hits,
             "self_checks": len([n for n in analysis["executed_tools"] if n == "locate_quote"]),
             "truncated": truncated,
             "forced_finish": forced,

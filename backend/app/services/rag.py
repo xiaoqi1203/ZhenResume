@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import re
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ..models import KnowledgeChunk, KnowledgeDoc
@@ -91,7 +91,17 @@ def search(
     if scope:
         stmt = stmt.where(KnowledgeDoc.scope == scope)
     if role_family:
-        stmt = stmt.where(KnowledgeDoc.role_family == role_family)
+        # ⚠️ 只匹配 role_family==目标岗位族 是**错的**：知识库里 compliance / industry /
+        # resume_template 这三类文档的 role_family 是 "general"，它们对任何岗位族都适用。
+        # 实测（eval_rag）：只匹配精确值会让"表达结构 / ATS 机制 / 公平性红线"永远检索不到，
+        # Agent 会如实报"该方向未命中检索结果"，看起来像模型不努力，实际是检索器过滤掉了。
+        stmt = stmt.where(
+            or_(
+                KnowledgeDoc.role_family == role_family,
+                KnowledgeDoc.role_family == "general",
+                KnowledgeDoc.role_family.is_(None),
+            )
+        )
 
     rows = db.execute(stmt).all()
     if not rows:
