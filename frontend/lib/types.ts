@@ -381,6 +381,8 @@ export interface Finding {
   evidence: FindingEvidence;
   suggestion: string;
   rewritten_text: string;
+  /** 该条结论的知识库依据（agentic 模式下由 Agent 检索并经服务端校验） */
+  citations?: FindingCitation[];
 }
 
 export type KnowledgeScope = 'role' | 'industry' | 'resume_template' | 'compliance';
@@ -390,6 +392,45 @@ export interface KnowledgeRef {
   chunk_id: string;
   title: string;
   scope: KnowledgeScope;
+}
+
+/** 知识库 chunk 级引用（Agentic RAG 产出，服务端已逐字校验） */
+export interface FindingCitation {
+  chunk_id: string;
+  doc_id?: string | null;
+  doc_title: string;
+  quote: string;
+  verified: boolean;
+}
+
+/** Agent 一次运行的轨迹（报告 extra_json.agent_trace 透出） */
+export interface AgentTrace {
+  engine: string;
+  agent?: string;
+  status: string;
+  notes?: string | null;
+  model_calls?: number;
+  tool_calls?: number;
+  retrieval_requests?: number;
+  retrieval_rounds?: number;
+  retrieval_blocked?: number;
+  retrieval_queries?: string[];
+  self_checks?: number;
+  reasoning?: string;
+  verify?: {
+    total: number;
+    verified: number;
+    rejected_missing_chunk?: number;
+    rejected_quote_not_found?: number;
+    rejected_duplicate?: number;
+  };
+  attach?: { attached: number; unmatched: number };
+  tokens?: number;
+  cost?: number;
+  latency_ms?: number;
+  truncated?: boolean;
+  forced_finish?: boolean;
+  error?: string;
 }
 
 export interface Report {
@@ -410,6 +451,8 @@ export interface Report {
   missing_keywords: string[];
   action_items: string[];
   knowledge_refs: KnowledgeRef[];
+  /** Agentic RAG 轨迹；fixed 模式为 null */
+  agent_trace?: AgentTrace | null;
   disclaimer: string;
 }
 

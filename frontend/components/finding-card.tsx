@@ -1,7 +1,7 @@
 'use client';
 
 import * as React from 'react';
-import { Check, Copy, Quote } from 'lucide-react';
+import { BookOpen, Check, Copy, Quote } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Finding, FindingCategory, EvidenceSource } from '@/lib/types';
 import { Badge } from '@/components/ui/badge';
@@ -129,6 +129,22 @@ export function FindingCard({ finding, className }: FindingCardProps) {
           <p className="rounded-md bg-slate-50 px-2 py-1.5 text-xs text-slate-600">
             引用：「{evidence.quote}」
           </p>
+        ) : null}
+        {finding.citations && finding.citations.length > 0 ? (
+          <div className="rounded-md border border-brand-200/70 bg-brand-50/40 px-2.5 py-2">
+            <p className="mb-1 flex items-center gap-1 text-[11px] font-medium text-brand-700">
+              <BookOpen className="h-3 w-3" aria-hidden />
+              知识库依据（Agent 检索 · 已逐字校验）
+            </p>
+            <ul className="space-y-1">
+              {finding.citations.map((citation) => (
+                <li key={`${citation.chunk_id}-${citation.quote.slice(0, 12)}`} className="text-xs text-slate-600">
+                  <span className="text-slate-500">《{citation.doc_title || '知识库'}》</span>「
+                  {citation.quote.length > 90 ? `${citation.quote.slice(0, 90)}…` : citation.quote}」
+                </li>
+              ))}
+            </ul>
+          </div>
         ) : null}
       </div>
     </article>

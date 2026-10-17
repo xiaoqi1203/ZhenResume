@@ -48,6 +48,9 @@ x-backend-env: &backend-env
   WORKFLOW_EXECUTOR: ${WORKFLOW_EXECUTOR:-celery}
   WORKFLOW_ENGINE: ${WORKFLOW_ENGINE:-langgraph}
   WORKFLOW_PARALLEL: ${WORKFLOW_PARALLEL:-true}
+  # Agentic RAG：只影响单份诊断（HR 批量在代码里强制 fixed）
+  WORKFLOW_MODE: ${WORKFLOW_MODE:-fixed}
+  AGENTIC_EVIDENCE_ENABLED: ${AGENTIC_EVIDENCE_ENABLED:-true}
   HR_SCREENING: ${HR_SCREENING:-true}
   HR_BATCH_CONCURRENCY: ${HR_BATCH_CONCURRENCY:-50}
   # 断点续跑存 PG（容器里用 sqlite 文件会随容器重建丢失；PG 才持久）

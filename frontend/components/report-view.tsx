@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { FindingCard } from '@/components/finding-card';
 import { RiskBadge, RISK_LEVEL_LABELS } from '@/components/risk-badge';
+import { AgentTracePanel } from '@/components/agent-trace-panel';
 import { ScoreRadar } from '@/components/score-radar';
 
 const GROUP_ORDER = ['red', 'yellow', 'green'] as const;
@@ -132,6 +133,9 @@ export function ReportView({ report, actions, banner }: ReportViewProps) {
           <p className="text-sm leading-relaxed text-slate-700">{report.summary || '暂无总评。'}</p>
         </CardContent>
       </Card>
+
+      {/* Agentic RAG 检索过程（仅 agentic 模式有） */}
+      {report.agent_trace ? <AgentTracePanel trace={report.agent_trace} /> : null}
 
       {/* 风险概览 */}
       <Card>
