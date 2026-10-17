@@ -102,7 +102,7 @@ export function AgentTracePanel({ trace, className }: AgentTracePanelProps) {
             <p className="mb-1 text-[10.5px] font-bold uppercase tracking-[0.12em] text-ink-500">
               Agent 自述（为什么这样检索 / 为什么没引用）
             </p>
-            <p className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-ink-700">
+            <p className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-ink-600">
               {trace.reasoning}
             </p>
           </div>

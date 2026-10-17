@@ -427,7 +427,7 @@ function CollapsibleBlock({
       {open ? (
         <CardContent className="space-y-4">
           {section?.tip ? (
-            <p className="border-l-2 border-ink-950 bg-ink-50 px-3 py-2 text-[11.5px] leading-relaxed text-ink-700">
+            <p className="border-l-2 border-ink-950 bg-ink-50 px-3 py-2 text-[11.5px] leading-relaxed text-ink-600">
               {section.tip}
             </p>
           ) : null}

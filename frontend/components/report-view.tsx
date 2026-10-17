@@ -304,7 +304,7 @@ export function ReportView({ report, actions, banner }: ReportViewProps) {
             {report.knowledge_refs.map((ref) => (
               <li
                 key={ref.chunk_id}
-                className="flex flex-wrap items-center gap-3 py-2.5 text-[13px] text-ink-700"
+                className="flex flex-wrap items-center gap-3 py-2.5 text-[13px] text-ink-600"
               >
                 <Badge variant="outline">{ref.scope}</Badge>
                 <span>{ref.title}</span>

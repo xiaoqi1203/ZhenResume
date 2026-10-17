@@ -192,7 +192,7 @@ export default function HomePage() {
                   <dt className="text-[13px] font-semibold text-ink-900">{item.label}</dt>
                   <dd className="tnum text-[13px] font-bold text-ink-950">{item.weight}%</dd>
                   {/* 说明文字用 #444 档（ink-700），避免太浅看不清 */}
-                  <p className="col-span-2 mt-0.5 text-[11.5px] leading-relaxed text-ink-700">
+                  <p className="col-span-2 mt-0.5 text-[11.5px] leading-relaxed text-ink-600">
                     {item.note}
                   </p>
                 </div>

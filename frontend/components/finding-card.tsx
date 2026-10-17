@@ -145,7 +145,7 @@ export function FindingCard({ finding, className }: FindingCardProps) {
             </p>
             <ul className="space-y-1">
               {finding.citations.map((citation) => (
-                <li key={`${citation.chunk_id}-${citation.quote.slice(0, 12)}`} className="text-[11.5px] leading-relaxed text-ink-700">
+                <li key={`${citation.chunk_id}-${citation.quote.slice(0, 12)}`} className="text-[11.5px] leading-relaxed text-ink-600">
                   <span className="text-brand-700">《{citation.doc_title || '知识库'}》</span>「
                   {citation.quote.length > 90 ? `${citation.quote.slice(0, 90)}…` : citation.quote}」
                 </li>

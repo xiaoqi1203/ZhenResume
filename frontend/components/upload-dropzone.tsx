@@ -120,7 +120,7 @@ export function UploadDropzone({
               type="button"
               onClick={() => inputRef.current?.click()}
               disabled={disabled}
-              className="border border-ink-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-700 hover:border-ink-950 hover:text-ink-950 disabled:opacity-50"
+              className="border border-ink-300 px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-600 hover:border-ink-950 hover:text-ink-950 disabled:opacity-50"
             >
               重新选择
             </button>

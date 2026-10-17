@@ -221,7 +221,7 @@ export default function PricingPage() {
         <CardContent className="flex flex-1 flex-col justify-between gap-4">
           <ul className="space-y-2">
             {plan.features.map((feature) => (
-              <li key={feature} className="flex items-start gap-2 text-sm text-ink-700">
+              <li key={feature} className="flex items-start gap-2 text-sm text-ink-600">
                 <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ink-950" aria-hidden strokeWidth={3} />
                 {feature}
               </li>
@@ -273,7 +273,7 @@ export default function PricingPage() {
       {error ? <ErrorBanner message={error} onRetry={() => void load()} /> : null}
 
       {notice && !usingFallback ? (
-        <div className="border border-ink-300 bg-ink-50 px-4 py-3 text-[12px] leading-relaxed text-ink-700">
+        <div className="border border-ink-300 bg-ink-50 px-4 py-3 text-[12px] leading-relaxed text-ink-600">
           {notice}
         </div>
       ) : null}
