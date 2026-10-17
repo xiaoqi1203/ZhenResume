@@ -128,36 +128,9 @@ def _price_of(spec: LlmProviderSpec) -> tuple[float, float]:
     return spec.price_in, spec.price_out
 
 
-def build_models(agent: str = "semantic_agent") -> list[ChatOpenAI]:
-    """按 `settings.llm_chain` 的供应商×模型阶梯构建一组 ChatOpenAI（首个为主，其余回退）。
-
-    与 `services.llm` 的阶梯语义保持一致：层间按配置顺序，层内按模型列表顺序。
-    ⚠️ 这里**不做**截断/超时跳过重试的差异化处理（LangChain 侧由
-    `ModelFallbackMiddleware` 承担"换模型"，SDK 自动重试关掉以免与既有语义冲突）。
-    """
-    from .llm import LLMClient
-
-    client = LLMClient()
-    models: list[ChatOpenAI] = []
-    for spec in settings.llm_chain:
-        for model in client._models_for(spec, agent):  # noqa: SLF001 —— 复用节点级路由
-            kwargs: dict[str, Any] = {
-                "model": model,
-                "base_url": spec.base_url,
-                "api_key": spec.api_key,
-                "temperature": 0.2,
-                "max_tokens": settings.llm_max_tokens,
-                "timeout": settings.llm_timeout_s,
-                # 关掉 SDK 重试：与 services.llm 的"截断/超时不重试、直接换模型"语义对齐
-                "max_retries": 0,
-                "streaming": False,
-                # 记录本次调用的供应商，便于事后归因与计价
-                "metadata": {"provider": spec.name},
-            }
-            if spec.extra_body:
-                kwargs["extra_body"] = dict(spec.extra_body)
-            models.append(ChatOpenAI(**kwargs))
-    return models
+# ⚠️ 模型装配逻辑统一在 `app/agentic/models.py`，这里只做转出，
+# 避免「Agent 循环」与「一次性实验」两处各自维护一套阶梯语义。
+from ..agentic.models import build_models  # noqa: E402,F401
 
 
 def _json_result(data: Any) -> str:
