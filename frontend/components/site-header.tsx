@@ -4,9 +4,14 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 
+/**
+ * 导航项。
+ * 「简历编辑器」在编辑器完善前**暂时下线**（页面文件保留在 app/editor，路由仍可直接访问，
+ * 只是不再出现在导航与任何入口里）。恢复时只需把下面这行加回来：
+ *   { href: '/editor', label: '简历编辑器' },
+ */
 const NAV_ITEMS = [
   { href: '/', label: '首页' },
-  { href: '/editor', label: '简历编辑器' },
   { href: '/hr', label: 'HR 批量' },
   { href: '/admin', label: '管理后台' },
   { href: '/pricing', label: '定价' },

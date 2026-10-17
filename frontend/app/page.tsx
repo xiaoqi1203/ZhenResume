@@ -150,17 +150,10 @@ export default function HomePage() {
               开始诊断
               <ArrowRight className="h-4 w-4" aria-hidden />
             </a>
-            <Link
-              href="/editor"
-              className="inline-flex h-12 flex-1 items-center justify-center whitespace-nowrap rounded-md border border-ink-300 bg-white px-6 text-[13px] font-semibold tracking-[0.02em] text-ink-800 transition-colors hover:border-ink-950 hover:text-ink-950 sm:flex-none"
-            >
-              用模板从零写简历
-            </Link>
+
           </div>
 
-          <p className="mt-3 max-w-lg text-[12px] leading-relaxed text-ink-500">
-            手上还没有简历文件？编辑器里有 4 套模板和逐栏写作提示，写完可以直接发起诊断。
-          </p>
+
 
           {/* 流水线：8 格等宽一行。用 grid-cols-8 + gap-px 保底，
               不用 flex-wrap —— 8 格在 7 列宽度下必换行，末格会孤零零掉到下一行。 */}

@@ -139,11 +139,16 @@ export default function ReportPage() {
     );
   }
 
-  // 契约 §9 闭环约定：editor 来源回编辑器（带 resumeId 回填原内容），upload 来源回首页重新上传
-  const fromEditor = report.resume_source === 'editor';
-  const editorHref = report.resume_id
-    ? `/editor?resumeId=${encodeURIComponent(report.resume_id)}`
-    : '/editor';
+  // 契约 §9 闭环约定：editor 来源回编辑器，upload 来源回首页重新上传。
+  // ⚠️ 编辑器在完善前暂时下线：所有"去编辑器"的入口统一回首页重新上传。
+  //    恢复时把 EDITOR_ENABLED 置 true（并同步放回 site-header 的导航项与首页按钮）即可。
+  const EDITOR_ENABLED = false;
+  const fromEditor = EDITOR_ENABLED && report.resume_source === 'editor';
+  const editorHref = EDITOR_ENABLED
+    ? report.resume_id
+      ? `/editor?resumeId=${encodeURIComponent(report.resume_id)}`
+      : '/editor'
+    : '/';
 
   const actions = (
     <>
@@ -172,6 +177,7 @@ export default function ReportPage() {
         <RefreshCw className="h-4 w-4" aria-hidden />
         {fromEditor ? '在编辑器中修改后重新诊断' : '修改后重新诊断'}
       </Link>
+      {EDITOR_ENABLED ? (
       <Link
         href={editorHref}
         className={buttonVariants({ variant: 'outline' })}
@@ -180,6 +186,7 @@ export default function ReportPage() {
         <PenLine className="h-4 w-4" aria-hidden />
         在编辑器里优化这份简历
       </Link>
+      ) : null}
     </>
   );
 
