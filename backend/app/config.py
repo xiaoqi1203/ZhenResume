@@ -186,10 +186,17 @@ class Settings(BaseSettings):
     jd_tier_weight_bonus: float = 0.6
     jd_tier_weight_keyword: float = 0.3
     # 语义判定 Agent 的预算（详见改动说明书 §5.3）
+    # ⚠️ 实测（P2-c，LangChain Agent，deepseek-v4-pro-0813）：一次判定自然收敛的轨迹是
+    #   第1轮 4 个工具、第2轮 18 个（批量核实关键词）、第3轮 4 个 kb_search、
+    #   第4轮 4 个 locate_quote（自检）、第5轮 finish → **5 次模型调用、31 次工具调用**。
+    #   所以工具上限必须 > 31，否则中间件会在 finish 之前直接把循环截断
+    #   （实测 run_limit=16 时被截断成 'Tool call limit reached'，判定全丢）。
+    #   注意：这里限的是**模型往返次数**（真正的成本驱动）与**工具调用总数**，
+    #   不是"允许的工具种类"——18 个并发 resume_search 是本地读，几乎零成本。
     semantic_judge_enabled: bool = True
     semantic_judge_cache: bool = True
-    semantic_judge_max_steps: int = 8
-    semantic_judge_max_tool_calls: int = 16
+    semantic_judge_max_steps: int = 16       # 模型往返上限（实测自然收敛 5–6 次；给足余量避免强制收尾）
+    semantic_judge_max_tool_calls: int = 60  # 工具调用总数上限（自然收敛约 31 次）
 
     # ---- 执行模型（谁把工作流跑起来）----
     # inline = FastAPI BackgroundTasks（现状；`scripts/verify.py` 依赖"请求返回前跑完"）

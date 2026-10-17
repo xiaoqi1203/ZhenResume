@@ -100,6 +100,38 @@ async def judge(rec: dict, llm, *, engine: str, min_evidence: bool = False) -> l
     if engine == "rule":
         return []  # 无语义：只看 v1 / v2-tier 基线
 
+    if engine == "langchain":
+        # P2-c：LangChain Agent（多轮工具 + 自主收敛 + locate_quote 自检）
+        import hashlib
+        from app.services.agent_langchain import run_semantic_agent_langchain
+
+        key = hashlib.sha256(
+            (rec["record_id"] + rec["raw_text"] + rec["jd_raw"]).encode("utf-8")
+        ).hexdigest()[:16]
+        cache_file = CACHE_DIR / f"{rec['record_id']}.lc.{key}.json"
+        if cache_file.exists():
+            data = json.loads(cache_file.read_text(encoding="utf-8"))
+            return [(k, q) for k, q in data.get("semantic_covered", [])]
+        run = await run_semantic_agent_langchain(
+            resume_text=rec["raw_text"], jd_text=rec["jd_raw"],
+            parsed_resume=pr, parsed_jd=pj, role_family="backend",
+        )
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "record_id": rec["record_id"], "engine": "langchain",
+                    "semantic_covered": run.semantic_covered,
+                    "judgments": run.judgments, "trace": run.trace,
+                    "verify_stats": run.verify_stats, "notes": run.notes,
+                    "status": run.status,
+                },
+                ensure_ascii=False, indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return run.semantic_covered
+
     if engine == "semantic":
         # P2-a 对照臂：单轮工具 + 一次结构化产出（不走 Agent 循环）
         # 缓存键含夹具内容哈希，夹具变了自动失效，避免复用过期判定。
@@ -226,10 +258,19 @@ async def run(engine: str, min_evidence: bool = False) -> None:
     t0 = time.perf_counter()
     cost = 0.0
 
+    failures: list[str] = []
     for rec in recs:
-        sem = await judge(rec, llm, engine=engine, min_evidence=min_evidence)
+        try:
+            sem = await judge(rec, llm, engine=engine, min_evidence=min_evidence)
+        except Exception as exc:  # noqa: BLE001 —— 单份失败（额度/网络）不应中断整轮
+            failures.append(f"{rec['record_id']}: {type(exc).__name__}: {str(exc)[:80]}")
+            sem = []
         rec["semantic"] = [kw for kw, _ in sem]
         rec["scores"] = score_all(rec, sem)
+    if failures:
+        print(f"\n⚠️ {len(failures)} 份判定失败（已按无判定计入）：")
+        for f in failures:
+            print("   ", f)
 
     elapsed = time.perf_counter() - t0
 
@@ -287,7 +328,7 @@ async def run(engine: str, min_evidence: bool = False) -> None:
 
     out_dir = EVAL_DIR / "runs"
     out_dir.mkdir(parents=True, exist_ok=True)
-    suffix = ("_minedge" if min_evidence else "") + ("_sp" if engine == "semantic" else "")
+    suffix = ("_minedge" if min_evidence else "") + ("_sp" if engine == "semantic" else "") + ("_lc" if engine == "langchain" else "")
     path = out_dir / f"eval_sort_{engine}{suffix}_{time.strftime('%Y%m%d-%H%M%S')}.json"
     path.write_text(
         json.dumps({"engine": engine, "groups": group_stats, "records": recs}, ensure_ascii=False, indent=2),
@@ -298,7 +339,7 @@ async def run(engine: str, min_evidence: bool = False) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--engine", choices=["rule", "oracle", "cache", "single", "semantic"], default="rule")
+    parser.add_argument("--engine", choices=["rule", "oracle", "cache", "single", "semantic", "langchain"], default="rule")
     parser.add_argument("--min-evidence", action="store_true", help="叠加证据强度过滤（排除技能栏裸词/过短引文）")
     args = parser.parse_args()
     asyncio.run(run(args.engine, min_evidence=args.min_evidence))
