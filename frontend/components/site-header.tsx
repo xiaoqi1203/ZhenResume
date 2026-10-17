@@ -26,7 +26,7 @@ export function SiteHeader() {
   const pathname = usePathname();
 
   return (
-    <header className="sticky top-0 z-40 w-full border-b border-ink-200 bg-white/95 backdrop-blur">
+    <header className="sticky top-0 z-40 w-full border-b border-ink-200 bg-white/90 backdrop-blur">
       <div className="mx-auto flex h-[62px] max-w-[1180px] items-stretch justify-between gap-6 px-5 sm:px-8">
         {/* 品牌：黑底白字方块 + 名称，参考图里 logo 是纯黑几何图形 */}
         <Link href="/" className="group flex shrink-0 items-center gap-2.5 focus-visible:outline-none">

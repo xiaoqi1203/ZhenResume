@@ -17,7 +17,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="zh-CN">
-      <body className="min-h-screen bg-white">
+      <body className="min-h-screen bg-ink-50">
         {/* 键盘用户按 Tab 的第一个落点 */}
         <a
           href="#main"

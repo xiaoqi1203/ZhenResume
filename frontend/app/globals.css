@@ -6,7 +6,7 @@
  * 全局底色与排版基调（V3.1 调整）
  * ---------------------------------------------------------------
  * 1. **不再有紫色画布**：页面两侧的紫色竖边是主要视觉干扰源，已删除；
- *    整站为白底，靠卡片底色（#FAFAFA）与发丝线区分模块。
+ *    **整站背景为极浅灰 #FAFAFA**，靠白色卡片与发丝线区分模块。
  * 2. 紫色只做强调：#6B21A8 低饱和深紫，用于标题关键词、按钮、选中态。
  * 3. 正文与描述文字一律深灰（#555 档），不用纯黑、不用紫色 —— 减轻阅读压迫。
  */
@@ -18,12 +18,12 @@
   }
 
   body {
-    @apply bg-white text-ink-900 antialiased;
+    @apply bg-ink-50 text-ink-900 antialiased;
     font-family:
       'Helvetica Neue', Helvetica, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
       'Microsoft YaHei', 'Source Han Sans SC', 'Noto Sans SC', Arial, sans-serif;
-    background-color: #ffffff;
-    /* 没有画布留白：内容直接铺在白底上，模块靠淡灰卡片浮起 */
+    background-color: #fafafa;
+    /* 整站背景 = 极浅灰 #FAFAFA；模块用白底卡片浮起 */
     padding: 0;
   }
 
@@ -59,18 +59,18 @@
 }
 
 @layer components {
-  /* 内容容器：整站白底，不再有"白纸 + 紫边"的层 */
+  /* 内容容器：透明（背景由 body 的 #FAFAFA 承担），只负责宽度与最小高度 */
   .sheet {
-    @apply relative mx-auto w-full bg-white;
+    @apply relative mx-auto w-full;
     min-height: 100dvh;
   }
 
   /*
-   * 模块卡片：极淡灰底 #FAFAFA + 轻微圆角 + 发丝线。
-   * 目的：从白底上"浮出来"，让上传/输入区一眼可识别（替代以前的纯白+边框）。
+   * 模块卡片：**白底** + 轻微圆角 + 发丝线。
+   * 背景改为 #FAFAFA 之后，浮起关系反转：浅灰背景 + 白色卡片 = 模块从背景上浮出来。
    */
   .panel {
-    @apply border border-ink-200 bg-ink-50;
+    @apply border border-ink-200 bg-white;
     border-radius: 10px;
   }
 

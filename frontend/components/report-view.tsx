@@ -230,7 +230,7 @@ export function ReportView({ report, actions, banner }: ReportViewProps) {
         ) : (
           grouped.map((group) => (
             <div key={group.severity} className="space-y-3">
-              <div className="flex flex-wrap items-baseline gap-3 bg-ink-50 px-3 py-2">
+              <div className="flex flex-wrap items-baseline gap-3 bg-ink-100 px-3 py-2">
                 <h3 className={`text-[12px] font-bold uppercase tracking-[0.1em] ${GROUP_TEXT[group.severity]}`}>
                   {GROUP_TITLES[group.severity]}
                 </h3>
