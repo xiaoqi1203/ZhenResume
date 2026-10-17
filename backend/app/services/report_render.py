@@ -73,6 +73,12 @@ def render_markdown(report: dict) -> str:
         else:
             # 覆盖率、篇幅这类结论基于全文统计，本来就没有单条引文，如实说明而不是留空
             lines.append("- **证据**：该结论基于全文统计，无单条引文")
+        citations = finding.get("citations") or []
+        if citations:
+            lines.append("- **知识库依据**：")
+            for c in citations[:3]:
+                title = c.get("doc_title") or "知识库"
+                lines.append(f"  - 《{title}》「{str(c.get('quote') or '')[:80]}」")
         lines.append(f"- **建议**：{finding.get('suggestion', '')}")
         if finding.get("rewritten_text"):
             lines.append("")

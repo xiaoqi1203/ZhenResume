@@ -143,6 +143,21 @@ def serialize_task_summary(task: AnalysisTask, report_id: str | None = None) -> 
 # --------------------------------------------------------------------------- #
 # 报告
 # --------------------------------------------------------------------------- #
+def _evidence_only(evidence_ref: dict | None) -> dict:
+    """evidence 字段保持既有形状：把落库时混存的 citations 剥掉。"""
+    from .services.citation import split_evidence_and_citations
+
+    ev, _ = split_evidence_and_citations(evidence_ref)
+    return ev or {"source": "resume", "quote": "", "span": None, "field": None}
+
+
+def _citations_of(evidence_ref: dict | None) -> list[dict]:
+    from .services.citation import split_evidence_and_citations
+
+    _, citations = split_evidence_and_citations(evidence_ref)
+    return citations
+
+
 def serialize_finding(finding) -> dict:
     return {
         "finding_id": finding.id,
@@ -151,7 +166,8 @@ def serialize_finding(finding) -> dict:
         "title": finding.title or "",
         "original_text": finding.original_text or "",
         "issue": finding.issue or "",
-        "evidence": finding.evidence_ref or {"source": "resume", "quote": "", "span": None, "field": None},
+        "evidence": _evidence_only(finding.evidence_ref),
+        "citations": _citations_of(finding.evidence_ref),
         "suggestion": finding.suggestion or "",
         "rewritten_text": finding.rewritten_text or "",
     }

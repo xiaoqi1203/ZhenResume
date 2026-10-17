@@ -69,7 +69,13 @@ def persist_report(state: WorkflowState) -> str:
                     issue=finding.get("issue"),
                     suggestion=finding.get("suggestion"),
                     rewritten_text=finding.get("rewritten_text"),
-                    evidence_ref=finding.get("evidence"),
+                    # citations（知识库 chunk 级引用）与 evidence 同存 JSON 列：
+                    # 既不改表结构，也保证 serializer 能原样取出（见 services/citation.split_evidence_and_citations）
+                    evidence_ref=(
+                        {**(finding.get("evidence") or {}), "citations": finding.get("citations") or []}
+                        if finding.get("citations")
+                        else finding.get("evidence")
+                    ),
                     sort_order=order,
                 )
             )

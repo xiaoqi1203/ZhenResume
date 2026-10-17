@@ -25,36 +25,13 @@ from app.agentic.registry import SPECS  # noqa: E402
 from app.db import session_scope  # noqa: E402
 from app.models import KnowledgeChunk  # noqa: E402
 from app.services import analyze  # noqa: E402
+from app.services.citation import attach_to_findings, verify_citations  # noqa: E402
+from app.services.report_render import render_markdown  # noqa: E402
 from app.services.parse_rules import parse_jd_text, parse_resume_text  # noqa: E402
 
 EVAL_DIR = BACKEND_DIR / "eval"
 DEFAULT_RESUME = EVAL_DIR / "sort_fixtures" / "sort_B03.txt"
 DEFAULT_JD = EVAL_DIR / "sort_fixtures" / "jd_backend.txt"
-
-
-def verify_citations(citations: list[dict]) -> dict:
-    """服务端复核：chunk 存在 + quote 能在其文本中**逐字**定位。"""
-    stats = {"total": 0, "chunk_found": 0, "quote_verified": 0, "details": []}
-    with session_scope() as db:
-        for c in citations or []:
-            stats["total"] += 1
-            chunk_id = str(c.get("chunk_id") or "")
-            quote = str(c.get("quote") or "").strip()
-            chunk = db.get(KnowledgeChunk, chunk_id) if chunk_id else None
-            found = chunk is not None
-            ok = bool(found and quote and quote in (chunk.chunk_text or ""))
-            stats["chunk_found"] += int(found)
-            stats["quote_verified"] += int(ok)
-            stats["details"].append(
-                {
-                    "chunk_id": chunk_id,
-                    "supports": str(c.get("supports") or "")[:40],
-                    "found": found,
-                    "quote_ok": ok,
-                    "quote": quote[:60],
-                }
-            )
-    return stats
 
 
 async def main() -> int:
@@ -71,13 +48,19 @@ async def main() -> int:
     pr, pj = parse_resume_text(resume_text), parse_jd_text(jd_text)
     missing, _covered = analyze.missing_keywords(pr, pj, resume_text)
 
+    findings = analyze.sort_findings(
+        analyze.rule_baseline_findings(pr, pj, "backend", resume_text, jd_text)
+    )[:6]
     inputs = AgentInputs(
         resume_text=resume_text,
         jd_text=jd_text,
         parsed_resume=pr,
         parsed_jd=pj,
         role_family="backend",
-        extra={"missing_keywords": missing[:12]},
+        extra={
+            "missing_keywords": missing[:12],
+            "findings": [{"index": i, "title": f.get("title"), "issue": (f.get("issue") or "")[:120]} for i, f in enumerate(findings)],
+        },
     )
 
     run = await BaseAgent(spec).run(inputs)
@@ -91,18 +74,38 @@ async def main() -> int:
     print("  工具序列:", t.get("tool_names"))
 
     citations = (run.output or {}).get("citations") or []
-    print(f"\n  产出的引用 {len(citations)} 条")
-    stats = verify_citations([c if isinstance(c, dict) else c.model_dump() for c in citations])
-    print(f"  服务端复核: chunk 存在 {stats['chunk_found']}/{stats['total']}｜quote 逐字可定位 {stats['quote_verified']}/{stats['total']}")
-    for d in stats["details"][:10]:
-        mark = "✓" if d["quote_ok"] else "✗"
-        print(f"    {mark} {d['chunk_id'][:8]} 支撑={d['supports']!r} quote={d['quote']!r}")
+    raw_citations = [c if isinstance(c, dict) else c.model_dump() for c in citations]
+    print(f"\n  Agent 产出引用 {len(raw_citations)} 条")
+    with session_scope() as db:
+        verified, vstats = verify_citations(db, raw_citations)
+    print(f"  服务端校验: 总数 {vstats['total']}｜通过 {vstats['verified']}｜"
+          f"chunk 不存在 {vstats['rejected_missing_chunk']}｜quote 定位失败 {vstats['rejected_quote_not_found']}｜重复 {vstats['rejected_duplicate']}")
+    for c in verified:
+        print(f"    OK {c['chunk_id'][:8]}《{c.get('doc_title') or ''}》 {c['quote'][:50]!r}")
+
+    findings, astats = attach_to_findings(findings, verified)
+    print(f"\n  挂载到 findings: {astats['attached']} 条（未匹配 {astats['unmatched']}）")
+    for i, f in enumerate(findings):
+        if f.get("citations"):
+            print(f"    [{i}] {f.get('title','')[:34]} <- {len(f['citations'])} 条依据")
+
+    md = render_markdown(
+        {
+            "report_id": "smoke", "resume_title": Path(args.file).name, "jd_title": pj.title,
+            "created_at": "", "scores": {"overall": 0}, "summary": "",
+            "findings": findings, "knowledge_refs": [], "missing_keywords": missing, "action_items": [],
+        }
+    )
+    excerpt = [ln for ln in md.splitlines() if "知识库依据" in ln or ln.startswith("  - 《")]
+    print("\n  渲染片段:")
+    for ln in excerpt[:8]:
+        print("    " + ln)
     reasoning = (run.output or {}).get("reasoning")
     if reasoning:
         print(f"\n  Agent 自述: {str(reasoning)[:300]}")
 
-    ok = stats["total"] > 0 and stats["quote_verified"] >= max(1, stats["total"] // 2)
-    print("\n结论:", "✓ Agentic RAG 闭环成立（多轮检索 + 可校验引用）" if ok else "✗ 引用质量不足，需调整提示词/工具")
+    ok = vstats["verified"] > 0 and astats["attached"] > 0
+    print("\n结论:", "OK Agentic RAG 闭环成立（多轮检索 -> 可校验引用 -> 挂载入报告）" if ok else "FAIL 引用未能挂载")
     return 0 if ok else 1
 
 

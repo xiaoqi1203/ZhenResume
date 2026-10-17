@@ -41,6 +41,10 @@ class Citation(BaseModel):
     chunk_id: str = Field(description="kb_search / read_chunk 返回过的切片 id")
     quote: str = Field(description="该切片文本中逐字连续的一段（不改写、不拼接）")
     supports: str = Field(description="这条引用支撑的结论（关键词或短句）")
+    finding_index: int | None = Field(
+        default=None,
+        description="若任务附加信息给了 findings 列表，填它对应的下标（从 0 开始）；不确定就留空",
+    )
 
 
 class EvidencePack(BaseModel):
