@@ -59,6 +59,23 @@ class Settings(BaseSettings):
     upload_dir: Path = DATA_DIR / "uploads"
     max_upload_mb: int = 10
 
+    # ---- 文件抽取与本地 OCR ----
+    # 图片简历（PNG/JPG）与扫描版 PDF 走**本机** OCR 引擎，不需要任何外部 API/Key，
+    # 也没有任何 Key/base_url 配置项 —— 装了什么引擎就用什么（见 services/ocr.py）。
+    #   auto      = 按 rapidocr → tesseract 顺序取第一个可用的（默认）
+    #   rapidocr  = 只用 rapidocr（pip install rapidocr-onnxruntime，纯 pip、推荐）
+    #   tesseract = 只用 tesseract（系统二进制 + pip install pytesseract）
+    #   off       = 关闭 OCR；图片/扫描件一律明确降级（空文本 + note，不静默）
+    ocr_enabled: bool = True
+    ocr_backend: str = "auto"
+    ocr_lang: str = "chi_sim+eng"        # tesseract 语言；缺哪个自动降级到已安装的子集
+    ocr_min_score: float = 0.5           # rapidocr 置信度阈值，低于它的文本块丢弃
+    ocr_max_side: int = 2200             # 识别前等比缩放，最长边不超过该值（0 = 不缩放）
+    ocr_max_pages: int = 10              # 扫描版 PDF 最多 OCR 页数（挡住 200 页扫描件）
+    ocr_render_dpi: int = 200            # 无内嵌位图时整页渲染的 DPI（需 pypdfium2）
+    ocr_text_layer_min_chars: int = 24   # PDF 文本层短于此值即视为扫描件，触发 OCR 回退
+    tesseract_cmd: str = ""              # tesseract 可执行文件路径；留空则从 PATH 找
+
     # ---- LLM（多供应商链）----
     # 按 `llm_providers` 的顺序逐层尝试；同一层内再按「模型阶梯」降级。
     # 全部失败才回落到该 Agent 的规则引擎实现（步骤标记 degraded，原因写进 notes，不静默）。
@@ -157,6 +174,22 @@ class Settings(BaseSettings):
     # HR 批量同时在跑的份数。每份是网络等待型任务，并发才不浪费；
     # 在飞的 LLM 请求数 ≈ 本值 × 每份并行度（排序表图每份最多 2 个），别超过供应商配额。
     hr_batch_concurrency: int = 50
+
+    # ---- 语义判断与评分档位（V2.0）----
+    # scoring_version：v1 = 等权子串覆盖率（行为基线，永不改动）；v2 = 分层加权 + 语义校验。
+    # 两档并存，保证历史报告可比、可回滚。
+    scoring_version: str = "v2"
+    # JD 要求的分层权重（§10.3）：核心项 / 加分项 / 概念词。
+    # 只作用于 JD 要求侧，绝不用于简历侧内容。1.0/0.6/0.3 表达"重要性差 3 倍"，
+    # 比 0.6/0.4 更有效——两个权重越接近，分层越不起作用。
+    jd_tier_weight_core: float = 1.0
+    jd_tier_weight_bonus: float = 0.6
+    jd_tier_weight_keyword: float = 0.3
+    # 语义判定 Agent 的预算（详见改动说明书 §5.3）
+    semantic_judge_enabled: bool = True
+    semantic_judge_cache: bool = True
+    semantic_judge_max_steps: int = 8
+    semantic_judge_max_tool_calls: int = 16
 
     # ---- 执行模型（谁把工作流跑起来）----
     # inline = FastAPI BackgroundTasks（现状；`scripts/verify.py` 依赖"请求返回前跑完"）

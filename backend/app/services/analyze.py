@@ -16,6 +16,11 @@ from datetime import datetime, timezone
 from ..schemas import ParsedJd, ParsedResume
 from .evidence import build_evidence
 
+try:  # 配置项只在分层加权时读取；导入失败不应让分析层整体不可用
+    from ..config import settings  # type: ignore
+except Exception:  # noqa: BLE001
+    settings = None  # type: ignore[assignment]
+
 
 def now_utc() -> datetime:
     """「当前时间」的唯一入口（时间线空窗、工作年限都依赖它）。
@@ -639,6 +644,102 @@ def gap_findings(parsed_resume: ParsedResume, parsed_jd: ParsedJd, raw_text: str
 # --------------------------------------------------------------------------- #
 # 评分
 # --------------------------------------------------------------------------- #
+# 语义校验通过的等价映射：[("分布式", "梳理 12 个服务的调用链路…"), ...]
+# 约定：调用方只传**已经过服务端引文定位校验**的条目（见改动说明书 §6.2）。
+SemanticCovered = list[tuple[str, str]]
+
+
+def _tier_of(kw: str, parsed_jd: ParsedJd) -> str:
+    """判断一条 JD 要求属于哪一层：core / bonus / keyword。"""
+    k = (kw or "").lower()
+    if any(k == s.lower() for s in parsed_jd.skills_core):
+        return "core"
+    if any(k == s.lower() for s in parsed_jd.skills_bonus):
+        return "bonus"
+    return "keyword"
+
+
+def _tier_weight(tier: str) -> float:
+    """分层权重（配置项）。缺失时回落 1.0。"""
+    if settings is None:
+        return 1.0
+    return float(
+        {
+            "core": getattr(settings, "jd_tier_weight_core", 1.0),
+            "bonus": getattr(settings, "jd_tier_weight_bonus", 0.6),
+            "keyword": getattr(settings, "jd_tier_weight_keyword", 0.3),
+        }.get(tier, 1.0)
+    )
+
+
+def _verified_keyword_set(semantic_covered: SemanticCovered | None) -> set[str]:
+    """把语义等价映射转成小写关键词集合；顺带丢弃空值。"""
+    return {str(kw).lower() for kw, _q in (semantic_covered or []) if str(kw or "").strip()}
+
+
+def _dedupe_semantic(
+    missing: list[str], covered: list[str], semantic_covered: SemanticCovered | None
+) -> list[tuple[str, str]]:
+    """语义等价的去重规则（与改动说明书 §4.1 一致）：
+    1) 同一关键词只计一次；2) 已被字面覆盖的不重复计；3) 只接受"字面缺失"清单里的关键词。
+    """
+    covered_lower = {c.lower() for c in covered}
+    missing_lower = {m.lower() for m in missing}
+    seen: set[str] = set()
+    out: list[tuple[str, str]] = []
+    for kw, quote in semantic_covered or []:
+        kw = str(kw or "").strip()
+        quote = str(quote or "").strip()
+        if not kw or not quote:
+            continue
+        k = kw.lower()
+        if k in seen or k in covered_lower or k not in missing_lower:
+            continue
+        seen.add(k)
+        out.append((kw, quote))
+    return out
+
+
+def _weighted_coverage(
+    missing: list[str],
+    covered: list[str],
+    parsed_jd: ParsedJd,
+    semantic_covered: SemanticCovered | None = None,
+) -> tuple[float, float, float]:
+    """分层加权覆盖率：Σ(命中项权重) / Σ(全部项权重)。
+
+    - 分层权重来自配置（core/bonus/keyword），只作用于 JD 要求侧；
+    - 计入**语义校验通过**的等价项（计入命中）；
+    - 分母自归一，无需额外处理；无任何项时返回原兜底 0.85。
+    """
+    verified = _verified_keyword_set(semantic_covered)
+    hit_w = 0.0
+    miss_w = 0.0
+    for kw in covered:
+        hit_w += _tier_weight(_tier_of(kw, parsed_jd))
+    for kw in missing:
+        if kw.lower() in verified:
+            hit_w += _tier_weight(_tier_of(kw, parsed_jd))
+        else:
+            miss_w += _tier_weight(_tier_of(kw, parsed_jd))
+    total_w = hit_w + miss_w
+    if total_w <= 0:
+        return 0.85, 0.0, 0.0
+    return hit_w / total_w, hit_w, total_w
+
+
+def _is_missing_keyword_finding(finding: dict) -> bool:
+    """该发现项是否是"某个关键词在简历中缺失"的条目。
+
+    判据用标题模板（`ats_findings` 生成），并做分隔符感知匹配，
+    避免 `SQL` 命中 `MySQL` 这类子串误伤。
+    """
+    if finding.get("category") != "ats":
+        return False
+    title = str(finding.get("title") or "")
+    return title.startswith("JD 要求的关键词") and "缺失" in title
+
+
 def _clamp(value: float, low: int = 0, high: int = 100) -> int:
     return int(max(low, min(high, round(value))))
 
@@ -648,10 +749,16 @@ def compute_scores(
     parsed_resume: ParsedResume,
     parsed_jd: ParsedJd,
     raw_text: str,
+    semantic_covered: SemanticCovered | None = None,
 ) -> dict[str, int]:
     """按 aaa.md §六.3 的权重合成总分。
 
     权重：ATS 30% / 影响力 25% / 清晰度 20% / 竞争力差距 15% / 风险 10%
+
+    `semantic_covered`（V2.0 新增，默认 None = 行为与改动前逐位相同）：
+    服务端**已校验过引文定位**的语义等价映射，形如 `[("分布式", "原文片段"), ...]`。
+    它只做一件事——把"其实是表述差异"的关键词计入覆盖，从而修正假差距造成的系统性低估。
+    纯函数约束：**不查库、不调模型**，只吃调用方传入并已校验的数据。
 
     扣分模型的两个关键取舍：
     1. **同一事实只扣一次**：比如「3 条经历没量化」与「全篇没量化」是同一个根因，
@@ -665,8 +772,24 @@ def compute_scores(
     """
     scored = [f for f in findings if is_rule_origin(f)]
     missing, covered = missing_keywords(parsed_resume, parsed_jd, raw_text)
-    total_kw = len(missing) + len(covered)
-    coverage = (len(covered) / total_kw) if total_kw else 0.85
+
+    # ---- 语义校验通过的等价映射（V2.0）----
+    # 只做去重与口径判定，**公式本身一行不改**（见改动说明书 §4.1）。
+    verified = _dedupe_semantic(missing, covered, semantic_covered)
+    if verified:
+        verified_kw = {kw.lower() for kw, _ in verified}
+        # 被语义校验为等价的项，不应再以"关键词缺失"的名义扣分
+        scored = [
+            f for f in scored
+            if not (_is_missing_keyword_finding(f) and any(kw in str(f.get("title") or "") for kw in verified_kw))
+        ]
+
+    used_v2 = str(getattr(settings, "scoring_version", "v2") or "v2").lower() == "v2"
+    if used_v2:
+        coverage, _hit_w, _total_w = _weighted_coverage(missing, covered, parsed_jd, semantic_covered)
+    else:
+        total_kw = len(missing) + len(covered)
+        coverage = (len(covered) / total_kw) if total_kw else 0.85
 
     bullets = content_bullets(parsed_resume)
     quant_ratio = (len([t for _, t in bullets if _is_quantified(t)]) / len(bullets)) if bullets else 0.0
@@ -695,6 +818,10 @@ def compute_scores(
         "clarity": clarity_score,
         "match": match_score,
         "risk": risk_score,
+        # 可解释性：本次由语义校验贡献的覆盖项（前端可展示"语义修正 +N"）
+        "semantic_covered": [kw for kw, _ in verified],
+        "semantic_covered_count": len(verified),
+        "scoring_version": "v2" if used_v2 else "v1",
     }
 
 
@@ -731,13 +858,19 @@ def compute_scores_deterministic(
     role_family: str,
     raw_text: str,
     jd_text: str,
+    semantic_covered: SemanticCovered | None = None,
 ) -> dict[str, int]:
-    """报告定稿用的评分入口：只吃规则层基线，与 LLM 无关。"""
+    """报告定稿用的评分入口：只吃规则层基线，与 LLM 无关。
+
+    `semantic_covered`：服务端已校验过引文定位的语义等价映射（见 compute_scores）。
+    默认 None → 与改动前逐位相同。
+    """
     return compute_scores(
         rule_baseline_findings(parsed_resume, parsed_jd, role_family, raw_text, jd_text),
         parsed_resume,
         parsed_jd,
         raw_text,
+        semantic_covered=semantic_covered,
     )
 
 

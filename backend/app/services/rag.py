@@ -77,12 +77,21 @@ def search(
     *,
     top_k: int = 5,
     scope: str | None = None,
+    role_family: str | None = None,
     min_score: float = 0.05,
 ) -> list[dict]:
-    """混合检索，返回 [{chunk_id, doc_id, title, scope, score, text}]，按相关度降序。"""
+    """混合检索，返回 [{chunk_id, doc_id, title, scope, role_family, score, text}]，按相关度降序。
+
+    `role_family`（V2.0 新增，默认 None = 行为与改动前逐位相同）：
+    按岗位族过滤知识库。该列在 `knowledge_docs` 上**本来就有索引**、`search` 也一直
+    返回它，但此前没有任何调用点传过 —— 属于"能力已就绪、从未接线"。
+    语义判定 Agent 与后续 agentic 检索会用它把候选集中到目标岗位族。
+    """
     stmt = select(KnowledgeChunk, KnowledgeDoc).join(KnowledgeDoc, KnowledgeChunk.doc_id == KnowledgeDoc.id)
     if scope:
         stmt = stmt.where(KnowledgeDoc.scope == scope)
+    if role_family:
+        stmt = stmt.where(KnowledgeDoc.role_family == role_family)
 
     rows = db.execute(stmt).all()
     if not rows:

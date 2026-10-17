@@ -479,20 +479,46 @@ def parse_jd_text(text: str) -> ParsedJd:
     parsed.skills_core = [t for t in matched if t not in bonus_matched][:25]
     parsed.skills_bonus = [t for t in matched if t in bonus_matched][:15]
 
-    if not parsed.skills_core and req_text:
-        for token in re.findall(r"[A-Za-z][A-Za-z0-9+#.]{1,20}", req_text):
-            if token not in parsed.skills_core:
-                parsed.skills_core.append(token)
-
-    # --- 关键词（业务域词汇） ---
+    # --- 业务域关键词 ---
+    # 说明：这里的结果既进 `keywords`（业务概念词），也用来**补全 skills_bonus**。
+    # 为什么必须这样补：`skills_bonus` 原先只从 `TECH_DICT` 里筛，而 JD 的"加分项"
+    # 往往写的是非技术的加分条件（开源贡献、稳定性建设经验、Service Mesh 等），
+    # 这些词不在技术词典里 → 实测 7 个 JD 的 `skills_bonus` **全部为空**，
+    # 导致"加分项权重"没有作用对象。故改为：加分项段落中出现的业务/能力词一律计入。
+    #
+    # ⚠️ 但**描述性套话必须排除**（实测发现的设计缺陷）：
+    # "大规模""交易系统""稳定性建设"这类词是 JD 里的修饰语，不是可验证的能力项。
+    # 若把它们放进要求清单，会出现"JD 多写几个形容词 → 每个候选人都必然缺几项 → 覆盖率与分数反被压低"，
+    # 与"分层加权是为了更公平"的初衷相反。因此这里显式排除。
+    BONUS_DESCRIPTIVE_NOISE = {
+        "大规模", "交易系统", "稳定性建设", "高可用", "业务场景", "相关经验",
+    }
     keyword_pool = [
         "高并发", "分布式", "微服务", "中间件", "性能优化", "稳定性", "可用性", "架构设计",
         "数据一致性", "缓存", "消息队列", "容器化", "自动化测试", "代码评审", "监控告警",
         "用户增长", "转化率", "留存", "拉新", "GMV", "ROI", "内容生态", "商业化",
         "需求评审", "原型设计", "数据驱动", "A/B测试", "项目管理", "跨部门协作", "团队协作",
         "英文文档", "开源", "技术选型", "重构", "编码规范",
+        # V2.0 补充：高频加分项中**可验证**的能力表述
+        "云原生", "Service Mesh", "Istio", "Envoy", "gRPC", "可观测性", "混沌工程",
+        "单元测试", "持续集成", "CI/CD", "DevOps",
     ]
-    parsed.keywords = [k for k in keyword_pool if k in text][:20]
+    kw_pool = [k for k in keyword_pool if k in text][:20]
+    # 加分项段落中的可验证能力词，补进 skills_bonus（去重、去掉已属核心项的、排除套话）
+    core_lower = {t.lower() for t in parsed.skills_core}
+    for k in keyword_pool:
+        if k in BONUS_DESCRIPTIVE_NOISE:
+            continue
+        if k in bonus_text and k.lower() not in core_lower and k not in parsed.skills_bonus:
+            parsed.skills_bonus.append(k)
+    parsed.skills_bonus = parsed.skills_bonus[:15]
+    parsed.keywords = list(dict.fromkeys(parsed.skills_bonus + kw_pool))[:20]
+
+    # 兜底：若仍无核心技能，从任职要求段落抽英文 token
+    if not parsed.skills_core and req_text:
+        for token in re.findall(r"[A-Za-z][A-Za-z0-9+#.]{1,20}", req_text):
+            if token not in parsed.skills_core:
+                parsed.skills_core.append(token)
 
     if not parsed.title:
         parsed.title = (text.strip().splitlines() or [""])[0][:40]

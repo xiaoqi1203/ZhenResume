@@ -1,7 +1,29 @@
 # ZhenResume 当前状态与待办（决策用一页纸）
 
 > 用途：停下来做功能取舍时看这一页。**只写已验证的事实**，未验证的会明确标注。
-> 更新日期：本轮 LangGraph 编排 + PG/Redis/Celery + HR 排序表落地之后。
+> 更新日期：V2.0 语义判断链路 P0/P1 落地之后（2026-10-16）。
+
+---
+
+## 〇、V2.0 增量（语义判断 + Agent 化，2026-10-16）
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| **P-1 评测集**（30 份夹具 + ground truth） | ✅ | `eval/fixtures/` + `eval/fixtures_expected.jsonl`；夹具答案在生成时确定，可自动算 recall |
+| 语义判定基线（单次调用） | ✅ | recall **88.5%**、**证据定位通过率 100%**（76/76）、真差距误判率 **0%**、¥0.005/份 |
+| **P0-bonus：加分项抽取修复** | ✅ | `skills_bonus` 由 **0 项 → 4 项**（`稳定性`/`开源`/`云原生`/`Service Mesh`） |
+| ↳ 附带修复：排除描述性套话 | ✅ | `大规模`/`交易系统`/`稳定性建设` 会令"多写形容词→候选人必然缺项→分数被压低"，已排除 |
+| **P0-tier：分层加权覆盖率** | ✅ | `analyze._weighted_coverage()`，权重 `core 1.0 / bonus 0.6 / keyword 0.3`（可配置） |
+| **P0-score：`semantic_covered` + `score_v2` 档位** | ✅ | 无语义/有语义（4 项）：ATS `66 → 74`，overall `84 → 88`；档位可切 `v1`/`v2` |
+| 回归 | ✅ | legacy / LangGraph 串行 / LangGraph 并行，**各自 174/174** |
+| **P1：工具层 7 个 tool** | ✅ | `services/agent_tools.py`；含 `locate_quote` 自检工具；参数错误返回错误而非抛异常 |
+| **P1：原生 function calling** | ✅ | `llm.complete_with_tools()`；`qwen3.8-flash` 实测 **1.5s**、返回 2 个并行 tool call |
+| **P1：`rag.search(role_family)`** | ✅ | 接线此前"有索引、有取值、从未传参"的岗位族过滤 |
+| P2：语义判定 Agent 循环 | ⏳ 待做 | 方案见 `ZhenResume_新链路LangChain-多Agent-AgenticRAG方案.md` |
+
+**两条必须记住的诚实结论**：
+1. 语义层解决的是**假差距**（区分"真有缺口"与"缺口其实是同义表述"）：两档 ATS 由 **0 分差 → 13 分差**；
+2. 但**排序质量未被证明提升**（Spearman +0.400 → +0.415）——现有夹具 20/30 份同档且关键词贫乏，测不出排序收益。**改进夹具是 P2 的前置任务**。
 
 ---
 
@@ -28,7 +50,7 @@
 | 单份 HR 排序表 | **29.6s**；**¥0.0213/份** |
 | 100 份外推（并发 50） | ≈ **56s**（10 份实测校准外推，**未做 50/100 份实测**） |
 | 输出 token | 完整 13,000/份 → HR **5,124/份**（−60%） |
-| LLM 链路 | aliyun `qwen3.8-max` → `deepseek-v4-pro-0813` → `qwen3.7-flash` → `qwen3.7-flash-2026-07-15` → deepseek `deepseek-flash` |
+| LLM 链路 | aliyun `qwen3.8-flash` → `qwen3.7-flash` → `qwen3.7-flash-2026-07-15` → deepseek `deepseek-flash`（**2026-10-16 更新**：`qwen3.8-max` 免费额度耗尽已移除；`qwen3.8-flash` 实测单次工具调用 1.5s，比 max 的 7.5s 快约 5×） |
 | Embedding | 主 `qwen3.7-text-embedding-flash`(1024) + 回退 Ollama `mxbai-embed-large`(1024)，含**模型签名守卫** |
 
 ### 已排掉的坑（都实测过）

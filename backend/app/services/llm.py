@@ -22,7 +22,7 @@ import logging
 import re
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 
@@ -58,6 +58,10 @@ class LLMResult:
     provider: str = ""
     degraded: bool = False
     note: str | None = None
+    # 原生 function calling（V2.0）：[{id, name, arguments(dict), protocol}]
+    # protocol = "native"（供应商原生 tools）| "json"（回退协议，由提示词约定 action/arguments）
+    tool_calls: list[dict] = field(default_factory=list)
+    finish_reason: str = ""
 
 
 def _ensure_json_hint(system: str, user: str) -> str:
@@ -95,6 +99,23 @@ def _extract_json(text: str) -> dict:
         except json.JSONDecodeError:
             pass
     raise LlmError("模型未返回合法 JSON")
+
+
+def _safe_json_args(raw: object) -> dict:
+    """把 tool_call 的 arguments 解析成 dict。
+
+    供应商可能给：JSON 字符串（标准）、已是 dict（部分网关）、空串、坏 JSON。
+    一律不抛异常——解析失败返回 {}，由调用方决定如何处理（通常是让模型重试或降级）。
+    """
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(str(raw))
+        return parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError:
+        return {}
 
 
 class LLMClient:
@@ -234,6 +255,186 @@ class LLMClient:
             mode="mock",
             degraded=True,
             note="LLM 全部层失败，已降级为规则引擎：" + "；".join(failures[-3:]),
+        )
+
+    # ------------------------------------------------------------------ #
+    # 原生 function calling（V2.0：语义判定 Agent 用）
+    # ------------------------------------------------------------------ #
+    async def complete_with_tools(
+        self,
+        *,
+        system: str,
+        messages: list[dict],
+        tools: list[dict],
+        tool_choice: str | dict = "auto",
+        agent: str = "unknown",
+    ) -> LLMResult:
+        """一次「带工具的模型调用」——只负责一次往返，**循环由 Agent 负责**。
+
+        设计要点：
+        1. **复用现有降级链**：供应商阶梯、同层模型阶梯、层内指数退避、截断/超时跳过重试
+           的语义与 `complete_json` 完全一致（同一份事故经验，不能有两套行为）。
+        2. **JSON 协议回退**：部分网关/模型不认 `tools` 字段（400）。此时**对同一个模型
+           去掉 tools 重试一次**，改用提示词约定 `{"action": ..., "arguments": {...}}`，
+           返回的 tool_calls 标 `protocol="json"`。绝不因为供应商差异让整条链失败。
+        3. 返回值里的 `tool_calls` 已把 arguments 解析成 dict（`{}` 表示解析失败）。
+        """
+        if self.mode == "mock":
+            return LLMResult(
+                data={}, text="", tokens_in=0, tokens_out=0, cost=0.0, latency_ms=0,
+                model=self.model, mode="mock", degraded=True,
+                note="mock 模式：无可用供应商，工具调用不可用（调用方应走规则兜底）",
+            )
+
+        system = _ensure_json_hint(system, json.dumps(messages, ensure_ascii=False)[:200])
+
+        failures: list[str] = []
+        attempts = max(1, settings.llm_max_retries + 1)
+        for spec in self.chain:
+            for model in self._models_for(spec, agent):
+                last_error: Exception | None = None
+                for attempt in range(1, attempts + 1):
+                    try:
+                        return await self._call_with_tools(
+                            spec=spec, model=model, system=system, messages=messages,
+                            tools=tools, tool_choice=tool_choice, agent=agent,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        last_error = exc
+                        logger.warning(
+                            "tools 调用失败 %s/%s 第 %d/%d 次 [%s]：%s: %s",
+                            spec.name, model, attempt, attempts, agent,
+                            type(exc).__name__, str(exc)[:200] or "(无消息)",
+                        )
+                        if isinstance(exc, (httpx.TimeoutException, LlmTruncated)):
+                            break  # 确定性失败，换模型
+                        if attempt < attempts:
+                            await asyncio.sleep(min(2 ** (attempt - 1), 4))
+                        continue
+                failures.append(f"{spec.name}/{model}：{type(last_error).__name__}: {str(last_error)[:120]}")
+
+        return LLMResult(
+            data={}, text="", tokens_in=0, tokens_out=0, cost=0.0, latency_ms=0,
+            model=self.model, mode="mock", degraded=True,
+            note="工具调用全部层失败（调用方应走规则兜底）：" + "；".join(failures[-3:]),
+        )
+
+    async def _call_with_tools(
+        self,
+        *,
+        spec: LlmProviderSpec,
+        model: str,
+        system: str,
+        messages: list[dict],
+        tools: list[dict],
+        tool_choice: str | dict,
+        agent: str,
+    ) -> LLMResult:
+        payload = {
+            "model": model,
+            "messages": [{"role": "system", "content": system}, *messages],
+            "tools": tools,
+            "tool_choice": tool_choice,
+            "temperature": 0.2,
+            "max_tokens": settings.llm_max_tokens,
+        }
+        if spec.extra_body:
+            payload.update(spec.extra_body)
+
+        headers = {"Authorization": f"Bearer {spec.api_key}", "Content-Type": "application/json"}
+        started = time.perf_counter()
+        async with httpx.AsyncClient(timeout=settings.llm_timeout_s) as client:
+            resp = await client.post(
+                f"{spec.base_url.rstrip('/')}/chat/completions", json=payload, headers=headers
+            )
+            protocol = "native"
+            if resp.status_code == 400 and (spec.extra_body or resp.text):
+                # ① 先试：去掉供应商级额外字段（与本项目既有行为一致）
+                trimmed = {k: v for k, v in payload.items() if k not in spec.extra_body}
+                resp2 = await client.post(
+                    f"{spec.base_url.rstrip('/')}/chat/completions", json=trimmed, headers=headers
+                )
+                if resp2.status_code < 400:
+                    resp, payload = resp2, trimmed
+                else:
+                    # ② 再试：整个去掉 tools，改走 JSON 协议
+                    logger.warning(
+                        "%s/%s 不接受 tools 字段，退化为 JSON 协议（action/arguments）", spec.name, model
+                    )
+                    protocol = "json"
+                    json_system = (
+                        system
+                        + "\n\n若需调用工具，只输出一个 JSON 对象："
+                        '{"action":"<工具名>","arguments":{...}}；'
+                        '若任务已完成，只输出：{"final":{...}}。不要输出其他文字。'
+                    )
+                    no_tools = {k: v for k, v in payload.items() if k not in ("tools", "tool_choice")}
+                    no_tools["messages"] = [{"role": "system", "content": json_system}, *messages]
+                    no_tools["response_format"] = {"type": "json_object"}
+                    for k in spec.extra_body:
+                        no_tools.pop(k, None)
+                    resp = await client.post(
+                        f"{spec.base_url.rstrip('/')}/chat/completions", json=no_tools, headers=headers
+                    )
+        latency = int((time.perf_counter() - started) * 1000)
+
+        if resp.status_code >= 400:
+            raise LlmError(f"{spec.name} {resp.status_code}: {resp.text[:300]}")
+
+        body = resp.json()
+        try:
+            choice = body["choices"][0]
+            message = choice["message"]
+        except (KeyError, IndexError) as exc:
+            raise LlmError(f"{spec.name} 响应结构异常: {str(body)[:300]}") from exc
+
+        finish_reason = str(choice.get("finish_reason") or "")
+        if finish_reason == "length":
+            raise LlmTruncated(
+                f"{spec.name}/{model} 输出被 max_tokens={settings.llm_max_tokens} 截断（工具调用不完整）"
+            )
+
+        content = message.get("content") or ""
+        tool_calls: list[dict] = []
+        for call in message.get("tool_calls") or []:
+            fn = call.get("function") or {}
+            tool_calls.append(
+                {
+                    "id": call.get("id") or f"call_{len(tool_calls)}",
+                    "name": fn.get("name") or "",
+                    "arguments": _safe_json_args(fn.get("arguments")),
+                    "protocol": "native",
+                }
+            )
+        if not tool_calls and protocol == "json":
+            data = _extract_json(content)
+            if data.get("action"):
+                tool_calls.append(
+                    {
+                        "id": "call_json_0",
+                        "name": str(data["action"]),
+                        "arguments": data.get("arguments") if isinstance(data.get("arguments"), dict) else {},
+                        "protocol": "json",
+                    }
+                )
+
+        usage = body.get("usage") or {}
+        return LLMResult(
+            data=_extract_json(content) if content.strip().startswith("{") else {},
+            text=content,
+            tokens_in=int(usage.get("prompt_tokens") or estimate_tokens(system)),
+            tokens_out=int(usage.get("completion_tokens") or estimate_tokens(content)),
+            cost=compute_cost(
+                int(usage.get("prompt_tokens") or 0), int(usage.get("completion_tokens") or 0),
+                price_in=spec.price_in, price_out=spec.price_out,
+            ),
+            latency_ms=latency,
+            model=body.get("model", model),
+            mode="live",
+            provider=spec.name,
+            note=f"{spec.name}/{body.get('model', model)}/{protocol}",
+            tool_calls=tool_calls,
+            finish_reason=finish_reason,
         )
 
     # ------------------------------------------------------------------ #
