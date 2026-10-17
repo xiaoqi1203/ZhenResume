@@ -89,16 +89,20 @@ export function ReportView({ report, actions, banner }: ReportViewProps) {
       {/* 报告头：标题给足字号，元信息用小号大写标签 */}
       <header className="flex flex-col gap-5 border-b border-ink-950 pb-6 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-400">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-600">
             诊断报告
           </p>
-          <h1 className="mt-2 text-[34px] leading-[0.95] tracking-tightest sm:text-[46px]">
+          <h1
+            className="mt-2 max-w-[46rem] text-[24px] leading-[1.15] tracking-tighter text-ink-950 sm:text-[30px]"
+            style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}
+            title={report.resume_title || '未命名简历'}
+          >
             {report.resume_title || '未命名简历'}
           </h1>
           <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-[11px] text-ink-500">
-            <span className="font-semibold uppercase tracking-[0.1em] text-ink-400">目标岗位</span>
+            <span className="font-semibold uppercase tracking-[0.1em] text-ink-600">目标岗位</span>
             <span className="text-ink-900">{report.jd_title || '未指定'}</span>
-            <span className="font-semibold uppercase tracking-[0.1em] text-ink-400">生成于</span>
+            <span className="font-semibold uppercase tracking-[0.1em] text-ink-600">生成于</span>
             <span className="tnum text-ink-900">{formatDateTime(report.created_at)}</span>
             <RiskBadge level={report.risk_level} />
           </div>
@@ -116,7 +120,7 @@ export function ReportView({ report, actions, banner }: ReportViewProps) {
             <span className={`text-[92px] font-extrabold leading-[0.82] tracking-tightest tabular-nums ${scoreTone(report.scores.overall)}`}>
               {report.scores.overall}
             </span>
-            <span className="pb-2 text-[11px] font-medium uppercase tracking-[0.14em] text-ink-400">
+            <span className="pb-2 text-[11px] font-medium uppercase tracking-[0.14em] text-ink-600">
               / 100
             </span>
           </div>
@@ -150,7 +154,7 @@ export function ReportView({ report, actions, banner }: ReportViewProps) {
                   </dd>
                   <dd className="flex items-baseline justify-end gap-1">
                     <span className="tnum text-[15px] font-extrabold text-ink-950">{value}</span>
-                    <span className="text-[10px] text-ink-400">{dimension.weight}</span>
+                    <span className="text-[10px] text-ink-600">{dimension.weight}</span>
                   </dd>
                 </div>
               );
@@ -173,7 +177,7 @@ export function ReportView({ report, actions, banner }: ReportViewProps) {
 
       {/* 总评：大字号引言式，贴参考图的粗排版 */}
       <section>
-        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-400">诊断总评</p>
+        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-600">诊断总评</p>
         <p className="mt-3 max-w-4xl text-[22px] font-semibold leading-[1.45] tracking-tight text-ink-950 sm:text-[26px]">
           {report.summary || '暂无总评。'}
         </p>
@@ -186,7 +190,7 @@ export function ReportView({ report, actions, banner }: ReportViewProps) {
       <section>
         <div className="flex flex-wrap items-end justify-between gap-3 border-b border-ink-200 pb-3">
           <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-ink-900">风险概览</h2>
-          <span className="tnum text-[11px] text-ink-400">共 {report.findings.length} 条结论</span>
+          <span className="tnum text-[11px] text-ink-600">共 {report.findings.length} 条结论</span>
         </div>
         <div className="mt-px grid grid-cols-3 gap-px bg-ink-200">
           {GROUP_ORDER.map((severity) => (
@@ -216,7 +220,7 @@ export function ReportView({ report, actions, banner }: ReportViewProps) {
             <ListChecks className="h-3.5 w-3.5" aria-hidden />
             逐条诊断与改写建议
           </h2>
-          <span className="tnum text-[11px] text-ink-400">共 {report.findings.length} 条</span>
+          <span className="tnum text-[11px] text-ink-600">共 {report.findings.length} 条</span>
         </div>
 
         {grouped.length === 0 ? (
@@ -231,7 +235,7 @@ export function ReportView({ report, actions, banner }: ReportViewProps) {
                   {GROUP_TITLES[group.severity]}
                 </h3>
                 <span className="tnum text-[11px] text-ink-500">{group.items.length} 条</span>
-                <span className="text-[11px] text-ink-400">{GROUP_DESCRIPTIONS[group.severity]}</span>
+                <span className="text-[11px] text-ink-600">{GROUP_DESCRIPTIONS[group.severity]}</span>
               </div>
               {group.items.map((finding) => (
                 <FindingCard key={finding.finding_id} finding={finding} />
@@ -311,7 +315,7 @@ export function ReportView({ report, actions, banner }: ReportViewProps) {
       ) : null}
 
       {/* 免责声明 */}
-      <div className="flex items-start gap-2 border-t border-ink-200 pt-4 text-[11px] leading-relaxed text-ink-400">
+      <div className="flex items-start gap-2 border-t border-ink-200 pt-4 text-[11px] leading-relaxed text-ink-600">
         <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
         <p>{report.disclaimer || '本报告由 AI 生成，仅供求职参考，不构成录用决策依据。'}</p>
       </div>

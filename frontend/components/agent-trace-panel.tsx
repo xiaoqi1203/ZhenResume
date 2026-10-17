@@ -108,7 +108,7 @@ export function AgentTracePanel({ trace, className }: AgentTracePanelProps) {
           </div>
         ) : null}
 
-        <p className="text-[10.5px] uppercase tracking-[0.08em] text-ink-400">
+        <p className="text-[10.5px] uppercase tracking-[0.08em] text-ink-600">
           成本 ¥{(trace.cost ?? 0).toFixed(4)} / tokens {trace.tokens ?? 0} / 延迟{' '}
           {Math.round((trace.latency_ms ?? 0) / 1000)}s
           {trace.truncated ? ' / 预算耗尽：结果可能不完整' : ''}
@@ -129,7 +129,7 @@ function Metric({
 }) {
   return (
     <div className="bg-white px-3 py-2.5">
-      <p className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-[0.1em] text-ink-400">
+      <p className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-[0.1em] text-ink-600">
         <Icon className="h-3 w-3" aria-hidden />
         {label}
       </p>

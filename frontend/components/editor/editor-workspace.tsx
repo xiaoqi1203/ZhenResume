@@ -1089,7 +1089,7 @@ export function EditorWorkspace() {
                 </span>
                 <div>
                   <p className="text-[13px] font-medium text-ink-800">上传文档导入</p>
-                  <p className="text-[11px] leading-relaxed text-ink-400">
+                  <p className="text-[11px] leading-relaxed text-ink-600">
                     拖到这里或点击选择 · 支持 PDF / DOCX / PNG / JPG / TXT，单份不超过 10MB
                   </p>
                 </div>

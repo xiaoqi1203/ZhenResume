@@ -129,49 +129,52 @@ export default function HomePage() {
             上传即分析 · 无需注册即可试用
           </p>
 
-          <h1 className="mt-6 text-[46px] leading-[0.95] tracking-tightest sm:text-[64px] lg:text-[76px]">
+          <h1 className="mt-6 text-[38px] leading-[1.08] tracking-tighter text-ink-950 sm:text-[50px] lg:text-[58px]">
             60 秒诊断简历，
             <br />
-            <span className="text-brand-500">让每段经历</span>
-            <br className="hidden sm:block" />
-            都被看见。
+            让每段经历
+            <span className="text-brand-500">都被看见</span>。
           </h1>
 
-          <p className="mt-7 max-w-xl text-[15px] leading-relaxed text-ink-600">
+          <p className="mt-6 max-w-xl text-[15px] leading-[1.75] text-ink-600">
             简甄用 8 个 Agent 依次完成解析、岗位匹配、ATS 检测、影响力评估、风险扫描与改写建议，
             给出可定位、可执行的诊断结论 —— 每条结论都能追溯回你的简历原文，
             关键结论还会附上知识库依据。
           </p>
 
-          <div className="mt-9 flex flex-wrap items-center gap-0 border border-ink-950">
+          <div className="mt-8 flex flex-wrap items-center gap-3">
             <a
               href="#diagnose"
-              className="inline-flex h-12 flex-1 items-center justify-center gap-2 bg-ink-950 px-6 text-[13px] font-semibold uppercase tracking-[0.06em] text-white transition-colors hover:bg-brand-500 sm:flex-none"
+              className="inline-flex h-12 flex-1 items-center justify-center gap-2 rounded-md bg-ink-950 px-6 text-[13px] font-semibold tracking-[0.02em] text-white transition-colors hover:bg-brand-500 sm:flex-none"
             >
               开始诊断
               <ArrowRight className="h-4 w-4" aria-hidden />
             </a>
             <Link
               href="/editor"
-              className="inline-flex h-12 flex-1 items-center justify-center whitespace-nowrap border-l border-ink-950 bg-white px-6 text-[13px] font-semibold uppercase tracking-[0.06em] text-ink-950 transition-colors hover:bg-ink-100 sm:flex-none"
+              className="inline-flex h-12 flex-1 items-center justify-center whitespace-nowrap rounded-md border border-ink-300 bg-white px-6 text-[13px] font-semibold tracking-[0.02em] text-ink-800 transition-colors hover:border-ink-950 hover:text-ink-950 sm:flex-none"
             >
               用模板从零写简历
             </Link>
           </div>
 
-          <p className="mt-4 max-w-lg text-[11px] leading-relaxed text-ink-400">
+          <p className="mt-3 max-w-lg text-[12px] leading-relaxed text-ink-500">
             手上还没有简历文件？编辑器里有 4 套模板和逐栏写作提示，写完可以直接发起诊断。
           </p>
 
           {/* 流水线：8 格等宽一行。用 grid-cols-8 + gap-px 保底，
               不用 flex-wrap —— 8 格在 7 列宽度下必换行，末格会孤零零掉到下一行。 */}
-          <div className="mt-10 grid grid-cols-8 gap-px border border-ink-200 bg-ink-200">
+          <div className="mt-9 grid grid-cols-8 gap-1.5">
             {PIPELINE.map((step, index) => (
               <span
                 key={step}
-                className="flex flex-col gap-1 bg-white px-1.5 py-2 text-center text-[10px] leading-tight text-ink-500 sm:text-[11px]"
+                className={
+                  index === 0
+                    ? 'flex flex-col gap-1 rounded-md bg-brand-500 px-1 py-2 text-center text-[10px] leading-tight text-white sm:text-[11px]'
+                    : 'flex flex-col gap-1 rounded-md bg-ink-100 px-1 py-2 text-center text-[10px] leading-tight text-ink-600 sm:text-[11px]'
+                }
               >
-                <span className="tnum text-[10px] font-bold text-ink-300">
+                <span className={`tnum text-[10px] font-bold ${index === 0 ? 'text-brand-100' : 'text-ink-600'}`}>
                   {String(index + 1).padStart(2, '0')}
                 </span>
                 <span className="whitespace-nowrap">{step}</span>
@@ -182,27 +185,28 @@ export default function HomePage() {
 
         {/* 评分口径：右栏做成"表格"而不是卡片，贴参考图的数据表观感 */}
         <aside className="lg:col-span-5">
-          <div className="border border-ink-200">
-            <div className="flex items-baseline justify-between gap-3 border-b border-ink-200 bg-ink-50 px-4 py-3">
-              <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-ink-900">
+          <div className="panel overflow-hidden">
+            <div className="flex items-baseline justify-between gap-3 border-b border-ink-200 px-4 py-3">
+              <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-ink-800">
                 报告由这五个维度合成
               </h2>
-              <span className="tnum text-[11px] font-semibold text-ink-400">100%</span>
+              <span className="tnum text-[11px] font-semibold text-ink-600">100%</span>
             </div>
 
-            <dl className="divide-y divide-ink-200">
+            <dl className="divide-y divide-ink-200/80">
               {DIMENSIONS.map((item) => (
                 <div key={item.label} className="grid grid-cols-[1fr_auto] gap-x-4 px-4 py-3">
                   <dt className="text-[13px] font-semibold text-ink-900">{item.label}</dt>
                   <dd className="tnum text-[13px] font-bold text-ink-950">{item.weight}%</dd>
-                  <p className="col-span-2 mt-0.5 text-[11px] leading-relaxed text-ink-400">
+                  {/* 说明文字用 #444 档（ink-700），避免太浅看不清 */}
+                  <p className="col-span-2 mt-0.5 text-[11.5px] leading-relaxed text-ink-700">
                     {item.note}
                   </p>
                 </div>
               ))}
             </dl>
 
-            <p className="border-t border-ink-200 px-4 py-3 text-[11px] leading-relaxed text-ink-500">
+            <p className="border-t border-ink-200 px-4 py-3 text-[11.5px] leading-relaxed text-ink-600">
               每一维度都由规则引擎按客观比率计算，同一份简历重复诊断分数一致；
               Agent 只负责补依据，不参与打分。
             </p>
@@ -216,14 +220,14 @@ export default function HomePage() {
       <section id="diagnose" className="scroll-mt-24">
         <div className="flex flex-wrap items-end justify-between gap-4 border-t border-ink-200 pt-8">
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-400">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-600">
               诊断入口
             </p>
             <h2 className="mt-2 text-[30px] leading-none sm:text-[38px]">
               上传简历，粘贴目标岗位。
             </h2>
           </div>
-          <p className="max-w-sm text-[11px] leading-relaxed text-ink-400">
+          <p className="max-w-sm text-[11.5px] leading-relaxed text-ink-600">
             简历数据只用于本次诊断，可随时删除；诊断结果不构成录用决策依据。
           </p>
         </div>
@@ -234,13 +238,13 @@ export default function HomePage() {
           </div>
         ) : null}
 
-        <form onSubmit={handleSubmit} className="mt-8 grid gap-px border border-ink-950 bg-ink-950 lg:grid-cols-2">
-          <div className="bg-white p-5 sm:p-6">
+        <form onSubmit={handleSubmit} className="mt-8 grid gap-4 lg:grid-cols-2">
+          <div className="panel p-5 sm:p-6">
             <div className="flex items-baseline justify-between gap-3 border-b border-ink-200 pb-3">
-              <h3 className="text-[11px] font-bold uppercase tracking-[0.14em] text-ink-900">
+              <h3 className="text-[11px] font-bold uppercase tracking-[0.14em] text-ink-800">
                 01 / 上传简历
               </h3>
-              <span className="text-[11px] text-ink-400">单份 ≤ 10MB</span>
+              <span className="text-[11px] text-ink-600">单份 ≤ 10MB</span>
             </div>
             <div className="pt-5">
               <UploadDropzone
@@ -252,26 +256,26 @@ export default function HomePage() {
             </div>
           </div>
 
-          <div className="bg-white p-5 sm:p-6">
+          <div className="panel p-5 sm:p-6">
             <div className="flex items-baseline justify-between gap-3 border-b border-ink-200 pb-3">
-              <h3 className="text-[11px] font-bold uppercase tracking-[0.14em] text-ink-900">
+              <h3 className="text-[11px] font-bold uppercase tracking-[0.14em] text-ink-800">
                 02 / 粘贴目标岗位 JD
               </h3>
-              <span className="tnum text-[11px] text-ink-400">
+              <span className="tnum text-[11px] text-ink-600">
                 {jdLength} 字
                 {jdLength > 0 && jdLength < 20 ? '（至少 20 字）' : ''}
               </span>
             </div>
 
             <div className="space-y-3 pt-5">
-              <div className="grid gap-px bg-ink-200 sm:grid-cols-2">
+              <div className="grid gap-2 sm:grid-cols-2">
                 <input
                   value={jdTitle}
                   onChange={(event) => setJdTitle(event.target.value)}
                   disabled={busy}
                   placeholder="岗位名称（选填）"
                   aria-label="岗位名称"
-                  className="h-10 w-full border-0 bg-white px-3 text-sm text-ink-950 placeholder:text-ink-400 focus:outline-none disabled:bg-ink-50"
+                  className="h-10 w-full rounded-md border border-ink-300 bg-white px-3 text-sm text-ink-950 placeholder:text-ink-500 focus:border-ink-950 focus:outline-none disabled:bg-ink-100"
                 />
                 <input
                   value={company}
@@ -279,7 +283,7 @@ export default function HomePage() {
                   disabled={busy}
                   placeholder="公司名称（选填）"
                   aria-label="公司名称"
-                  className="h-10 w-full border-0 bg-white px-3 text-sm text-ink-950 placeholder:text-ink-400 focus:outline-none disabled:bg-ink-50"
+                  className="h-10 w-full rounded-md border border-ink-300 bg-white px-3 text-sm text-ink-950 placeholder:text-ink-500 focus:border-ink-950 focus:outline-none disabled:bg-ink-100"
                 />
               </div>
               <Textarea
@@ -292,7 +296,7 @@ export default function HomePage() {
             </div>
           </div>
 
-          <div className="bg-white p-5 sm:col-span-2 sm:p-6">
+          <div className="panel p-5 sm:col-span-2 sm:p-6">
             <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
               <Button
                 type="submit"
@@ -312,7 +316,7 @@ export default function HomePage() {
                   </>
                 )}
               </Button>
-              <p className="text-[11px] leading-relaxed text-ink-400">
+              <p className="text-[11.5px] leading-relaxed text-ink-600">
                 通常需要 20–60 秒，期间可在进度页看到每个 Agent 的实时状态。
               </p>
             </div>
@@ -326,7 +330,7 @@ export default function HomePage() {
       <section>
         <div className="flex flex-wrap items-end justify-between gap-4 border-t border-ink-200 pt-8">
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-400">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-600">
               为什么不是打分器
             </p>
             <h2 className="mt-2 max-w-2xl text-[30px] leading-none sm:text-[38px]">
@@ -361,7 +365,7 @@ export default function HomePage() {
       {/* ---------------------------------------------------------------- */}
       <section className="flex flex-wrap items-center justify-between gap-6 bg-ink-950 px-6 py-10 sm:px-10">
         <div>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-400">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-600">
             现在开始
           </p>
           <h2 className="mt-2 max-w-xl text-[26px] leading-tight text-white sm:text-[32px]">

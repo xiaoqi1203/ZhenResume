@@ -16,7 +16,7 @@ export type BadgeVariant =
  */
 const VARIANT_CLASSES: Record<BadgeVariant, string> = {
   default: 'bg-ink-950 text-white border border-ink-950',
-  brand: 'bg-brand-50 text-brand-700 border border-brand-500',
+  brand: 'bg-ink-100 text-brand-700 border border-brand-500',
   secondary: 'bg-ink-100 text-ink-700 border border-ink-200',
   outline: 'bg-white text-ink-600 border border-ink-300',
   red: 'bg-white text-red-700 border border-red-500',

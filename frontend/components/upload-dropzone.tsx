@@ -158,7 +158,7 @@ export function UploadDropzone({
             'flex cursor-pointer flex-col items-center justify-center gap-3 border-2 border-dashed px-6 py-12 text-center transition-colors',
             'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500',
             dragging
-              ? 'border-brand-500 bg-brand-50'
+              ? 'border-brand-500 bg-brand-50/50'
               : 'border-ink-300 bg-ink-50 hover:border-ink-950 hover:bg-white',
             disabled && 'pointer-events-none opacity-60',
           )}

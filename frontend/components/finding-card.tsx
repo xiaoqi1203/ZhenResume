@@ -81,7 +81,7 @@ export function FindingCard({ finding, className }: FindingCardProps) {
           </blockquote>
         </section>
 
-        <section className="border border-brand-500 bg-brand-50 p-3">
+        <section className="border border-brand-300 bg-ink-50 p-3">
           <div className="mb-1.5 flex items-center justify-between gap-2">
             <p className="text-[10.5px] font-bold uppercase tracking-[0.12em] text-brand-700">
               改写建议
@@ -112,13 +112,13 @@ export function FindingCard({ finding, className }: FindingCardProps) {
 
       <div className="mt-3 space-y-1.5 text-sm">
         <p className="text-[13px] leading-relaxed text-ink-800">
-          <span className="mr-1.5 text-[10.5px] font-bold uppercase tracking-[0.1em] text-ink-400">
+          <span className="mr-1.5 text-[10.5px] font-bold uppercase tracking-[0.1em] text-ink-600">
             问题
           </span>
           {finding.issue}
         </p>
         <p className="text-[13px] leading-relaxed text-ink-800">
-          <span className="mr-1.5 text-[10.5px] font-bold uppercase tracking-[0.1em] text-ink-400">
+          <span className="mr-1.5 text-[10.5px] font-bold uppercase tracking-[0.1em] text-ink-600">
             建议
           </span>
           {finding.suggestion}
@@ -138,7 +138,7 @@ export function FindingCard({ finding, className }: FindingCardProps) {
           </p>
         ) : null}
         {finding.citations && finding.citations.length > 0 ? (
-          <div className="border border-brand-500 bg-brand-50 px-2.5 py-2">
+          <div className="border border-brand-300 bg-ink-50 px-2.5 py-2">
             <p className="mb-1 flex items-center gap-1 text-[10.5px] font-bold uppercase tracking-[0.1em] text-brand-700">
               <BookOpen className="h-3 w-3" aria-hidden />
               知识库依据（Agent 检索 · 已逐字校验）

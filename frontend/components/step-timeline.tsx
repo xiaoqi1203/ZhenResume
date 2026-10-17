@@ -59,7 +59,7 @@ function StatusIcon({ status }: { status: StepStatus }) {
     );
   }
   return (
-    <span className="flex h-6 w-6 items-center justify-center border border-ink-300 bg-white text-ink-400">
+    <span className="flex h-6 w-6 items-center justify-center border border-ink-300 bg-white text-ink-600">
       <CircleDashed className="h-3.5 w-3.5" aria-hidden />
     </span>
   );
@@ -118,7 +118,7 @@ export function StepTimeline({ steps, className }: StepTimelineProps) {
                 <span
                   className={cn(
                     'truncate text-[13px]',
-                    step.status === 'pending' ? 'text-ink-400' : 'font-bold text-ink-950',
+                    step.status === 'pending' ? 'text-ink-600' : 'font-bold text-ink-950',
                   )}
                 >
                   {label}
@@ -135,7 +135,7 @@ export function StepTimeline({ steps, className }: StepTimelineProps) {
                   {STATUS_TEXT[step.status]}
                 </span>
               </div>
-              <div className="flex items-center gap-3 text-[11px] text-ink-400">
+              <div className="flex items-center gap-3 text-[11px] text-ink-600">
                 <span>耗时 {formatLatency(step.latency_ms)}</span>
                 <span>token {formatTokens(step.tokens)}</span>
               </div>

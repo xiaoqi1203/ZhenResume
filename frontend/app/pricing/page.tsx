@@ -290,7 +290,7 @@ export default function PricingPage() {
             return (
               <section key={group.key} className="space-y-5">
                 <div className="border-t border-ink-200 pt-6">
-                  <p className="text-xs font-medium tracking-wide text-ink-400">{group.eyebrow}</p>
+                  <p className="text-xs font-medium tracking-wide text-ink-600">{group.eyebrow}</p>
                   <h2 className="mt-2 text-[22px] leading-tight">{group.title}</h2>
                   <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-ink-500">
                     {group.description}
@@ -305,7 +305,7 @@ export default function PricingPage() {
         </div>
       )}
 
-      <p className="border-t border-ink-200 pt-6 text-xs leading-relaxed text-ink-400">
+      <p className="border-t border-ink-200 pt-6 text-xs leading-relaxed text-ink-600">
         支付由第三方渠道处理，简甄不存储银行卡信息。订单与支付回调接口遵循 API 契约 §6.1，
         MVP 阶段 <code className="font-mono">pay_url</code> 指向 Mock 支付页。
       </p>

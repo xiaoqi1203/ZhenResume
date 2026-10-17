@@ -32,7 +32,7 @@ export function SiteHeader() {
             <span className="text-[17px] font-extrabold leading-none tracking-tighter text-ink-950">
               简甄
             </span>
-            <span className="text-[10px] font-medium uppercase tracking-[0.18em] text-ink-400">
+            <span className="text-[10px] font-medium uppercase tracking-[0.18em] text-ink-600">
               ZhenResume
             </span>
           </span>
