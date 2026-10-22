@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 
 from langgraph.graph import END, START, StateGraph
@@ -33,7 +34,7 @@ from .nodes import (
 )
 from .hr_nodes import hr_summary_node
 from .persist import persist_report
-from .state import CONTRACT_STEPS, GraphContext, WorkflowState
+from .state import CONTRACT_STEPS, MERGE_ORDER, GraphContext, WorkflowState
 from .steps import fail_task, mark_task_running, record_step
 
 logger = logging.getLogger(__name__)
@@ -71,27 +72,46 @@ def rework_node(_state: WorkflowState) -> dict:
 # --------------------------------------------------------------------------- #
 def build_graph(*, parallel: bool | None = None, checkpointer=None, workflow_mode: str | None = None):
     parallel = settings.workflow_parallel if parallel is None else parallel
-    # Agentic RAG 只在单份诊断（本图）生效；HR 排序表图完全不感知该开关。
-    agentic = (workflow_mode or settings.workflow_mode) == "agentic" and settings.agentic_evidence_enabled
+    # 两条线在这里分开（`WORKFLOW_MODE`）：
+    #   fixed    = 8 节点各一次 LLM 调用（行为与新增 agent 线之前逐位一致）
+    #   agentic  = **finalize（规则评分）之前的分析全部由 Agent 自主调用工具完成**
+    #
+    # 注意 `agentic` 与 `agentic_evidence` 是**两件事**，别混：
+    #   agentic            → 换分析节点（本函数下面的分支）
+    #   agentic_evidence   → qc 之后补 chunk 级引用（可选附加，默认开）
+    mode = workflow_mode or settings.workflow_mode
+    agentic = mode == "agentic"
+    agentic_evidence = agentic and settings.agentic_evidence_enabled
     nodes = build_agent_nodes()
 
     g = StateGraph(WorkflowState, context_schema=GraphContext)
     g.add_node("setup", setup_node)
     g.add_node("retrieve", retrieve_node)
 
-    for name in ("parse", "jd_match", "suggestion", "report", "qc"):
+    # agent 线：jd_match / ats / impact / risk 换成 Agent 自主分析节点。
+    # parse / suggestion / report / qc 保留确定性单次调用 —— 理由见 agentic/analyzers.py 的模块注释：
+    # 它们分别只做"结构化"与"收敛"，没有需要多轮取证的判断。
+    analyzer_nodes: dict[str, Callable] = {}
+    if agentic:
+        from .agent_nodes import make_analyzer_node
+
+        for name in ("jd_match", "ats", "impact", "risk"):
+            analyzer_nodes[name] = make_analyzer_node(name, parallel_safe=parallel and name in MERGE_ORDER)
+
+    for name in ("parse", "suggestion", "report", "qc"):
         g.add_node(name, nodes[name])
+    g.add_node("jd_match", analyzer_nodes["jd_match"] if agentic else nodes["jd_match"])
 
     if parallel:
         for name, fn in parallel_agent_nodes().items():
-            g.add_node(name, fn)
+            g.add_node(name, analyzer_nodes.get(name, fn))
         g.add_node("merge", merge_node)
     else:
         for name in ("ats", "impact", "risk"):
-            g.add_node(name, nodes[name])
+            g.add_node(name, analyzer_nodes.get(name, nodes[name]))
 
     g.add_node("finalize", finalize_node)
-    if agentic:
+    if agentic_evidence:
         # 非契约节点：qc 之后、finalize 之前，只挂引用不改分
         g.add_node("agentic_evidence", agentic_evidence_node)
     g.add_node("persist", persist_node)
@@ -119,14 +139,14 @@ def build_graph(*, parallel: bool | None = None, checkpointer=None, workflow_mod
     g.add_edge("report", "qc")
     # 注意：qc 只能挂条件边，不能再挂静态边（官方明确警告两者会同时执行）
     # 映射表必须与「实际存在的节点」一致，否则 compile 会报 unknown target。
-    # agentic 模式下 qc 的"定稿"分支先经过引用节点
-    qc_routes = {"finalize": ("agentic_evidence" if agentic else "finalize")}
+    # agentic_evidence 模式下 qc 的"定稿"分支先经过引用节点
+    qc_routes = {"finalize": ("agentic_evidence" if agentic_evidence else "finalize")}
     if settings.workflow_rework_max > 0:
         qc_routes["rework"] = "rework"
     g.add_conditional_edges("qc", route_after_qc, qc_routes)
     if settings.workflow_rework_max > 0:
         g.add_edge("rework", "suggestion")
-    if agentic:
+    if agentic_evidence:
         g.add_edge("agentic_evidence", "finalize")
     g.add_edge("finalize", "persist")
     g.add_edge("persist", END)
@@ -238,12 +258,15 @@ async def make_checkpointer():
 # --------------------------------------------------------------------------- #
 # 入口
 # --------------------------------------------------------------------------- #
-async def run_graph(task_id: str, *, mode: str = "full") -> str | None:
+async def run_graph(task_id: str, *, mode: str = "full", workflow_mode: str | None = None) -> str | None:
     """后台任务入口。`mode="screening"` 时走 HR 排序表图（轻量，砍掉详细分析）。
 
     `mode="auto"` 时按任务类型决定：
     - `analysis_tasks.type == "batch"` → HR 排序表（HR 批量初筛）；
     - 其它（`single`，包含编辑器发起的诊断）→ 完整 8 节点流水线。
+
+    `workflow_mode`：按**任务**覆盖 fixed / agentic（前端提交时选择）。
+    只对单份诊断生效；HR 排序表恒为 fixed。
     """
     if mode == "auto":
         mode = "screening" if (settings.hr_screening and _is_batch_task(task_id)) else "full"
@@ -251,7 +274,7 @@ async def run_graph(task_id: str, *, mode: str = "full") -> str | None:
     await mark_task_running(task_id)
 
     # Agentic RAG 只用于单份诊断；HR 排序表（screening）**恒为 fixed**
-    workflow_mode = "fixed" if mode == "screening" else settings.workflow_mode
+    workflow_mode = "fixed" if mode == "screening" else (workflow_mode or settings.workflow_mode)
 
     async with make_checkpointer() as checkpointer:
         graph = (
@@ -270,13 +293,17 @@ async def run_graph(task_id: str, *, mode: str = "full") -> str | None:
         }
         if settings.langgraph_durability:
             invoke_kwargs["durability"] = settings.langgraph_durability
+        # `workflow_mode` 装进初始 state：finalize 节点据此决定是否产出深度分（双分制）。
+        # 不放进 GraphContext 的原因：它要参与 checkpoint 重放（重放时 mode 必须一致），
+        # 而 GraphContext 明确约定"不进 checkpoint"（见 state.py 顶部三条铁律）。
+        initial_state = {"task_id": task_id, "workflow_mode": workflow_mode}
         try:
             try:
-                final = await graph.ainvoke({"task_id": task_id}, **invoke_kwargs)
+                final = await graph.ainvoke(initial_state, **invoke_kwargs)
             except TypeError:
                 # 老版本没有 durability 参数 → 去掉再试一次
                 invoke_kwargs.pop("durability", None)
-                final = await graph.ainvoke({"task_id": task_id}, **invoke_kwargs)
+                final = await graph.ainvoke(initial_state, **invoke_kwargs)
         except WorkflowAbort as exc:
             fail_task(task_id, str(exc))
             return None

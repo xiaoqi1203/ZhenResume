@@ -53,7 +53,9 @@ NODE_STATE_FIELDS: dict[str, tuple[str, ...]] = {
     "impact": (),
     "risk": (),
     "suggestion": ("findings", "action_items"),
-    "report": ("scores", "knowledge_refs", "summary"),
+    # depth_scores：双分制的"深度分"（含模型补充的发现项）。只有 agentic 模式产出，
+    # fixed 模式下恒为空 dict —— 由 report 节点写、finalize 节点读、persist 落库。
+    "report": ("scores", "knowledge_refs", "summary", "risk_level", "depth_scores"),
     "qc": ("findings", "qc_report"),
 }
 
@@ -94,11 +96,20 @@ class WorkflowState(TypedDict, total=False):
     action_items: list
     knowledge_refs: list
     scores: dict
+    # 双分制的深度分（agentic 模式才有；fixed 模式为 {}，出参为 null）
+    # 结构：{overall/ats/impact/clarity/match/risk, delta, extra_findings, extra_by_category, explain}
+    depth_scores: dict
     summary: str
     qc_report: dict
     role_family: str
+    # 报告定稿的风险等级（analyze.finalize_report 产出）。qc 之后**只重算分数**，
+    # 不重算它 —— 否则「3 条红 + yellow」会在 finalize 里被重新写回。
+    risk_level: str
     # Agentic RAG 的轨迹（非契约字段，只进报告 extra_json，不写 workflow_steps）
     agent_trace: dict
+    # 本次任务的模式（fixed | agentic）。由 run_graph 装进初始 state，
+    # 供 finalize 节点判断"要不要出深度分" —— 双分制只在 agentic 模式生效。
+    workflow_mode: str
 
     # --- 需要 reducer 的字段 ---
     outputs: Annotated[dict, merge_dict]  # 并行节点各写自己那一个 key
@@ -142,6 +153,8 @@ def ctx_from_state(state: WorkflowState) -> AgentContext:
         parsed_resume=safe_resume(state.get("parsed_resume")),
         parsed_jd=safe_jd(state.get("parsed_jd")),
         role_family=state.get("role_family", "general"),
+        # 模式是任务属性：qc 的定稿靠它决定要不要出深度分（双分制）。
+        workflow_mode=str(state.get("workflow_mode") or "fixed"),
         knowledge_hits=list(state.get("knowledge_hits") or []),
         prompt_overrides=dict(state.get("prompt_overrides") or {}),
     )
@@ -151,7 +164,9 @@ def ctx_from_state(state: WorkflowState) -> AgentContext:
     ctx.action_items = list(state.get("action_items") or [])
     ctx.knowledge_refs = list(state.get("knowledge_refs") or [])
     ctx.scores = dict(state.get("scores") or {})
+    ctx.depth_scores = dict(state.get("depth_scores") or {})
     ctx.summary = state.get("summary", "")
+    ctx.risk_level = state.get("risk_level", "") or ""
     ctx.qc_report = dict(state.get("qc_report") or {})
     ctx.outputs = dict(state.get("outputs") or {})
     return ctx

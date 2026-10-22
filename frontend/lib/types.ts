@@ -48,6 +48,8 @@ export interface HealthResponse {
 
 export interface ResumeBasics {
   name: string;
+  /** 目标岗位（上传解析常拿不到，缺省视为空串；编辑器导入时回填） */
+  target_title?: string;
   email: string;
   phone: string;
   city: string;
@@ -137,6 +139,11 @@ export interface Resume {
   source: ResumeSource;
   /** 仅编辑器创建的简历有值；上传的简历为 `null` */
   editor_content: EditorContent | null;
+  /**
+   * 编辑器保存时选择的模板 code；未选模板或上传的简历为 `null`。
+   * 用于「继续编辑」时把模板详情回填到编辑器。
+   */
+  template_code?: string | null;
   created_at: string;
   /**
    * 抽取方法，例如 `pypdf` / `python-docx` / `ocr/rapidocr` / `ocr-unavailable`。
@@ -159,6 +166,8 @@ export interface EditorBasics {
   email: string;
   city: string;
   links: string[];
+  /** 头像 data URL（前端压缩到 480px 内），仅用于导出 PDF/DOCX，不参与诊断 */
+  avatar?: string;
 }
 
 export interface EditorWorkItem {
@@ -227,6 +236,7 @@ export function createEmptyEditorContent(): EditorContent {
       email: '',
       city: '',
       links: [],
+      avatar: '',
     },
     summary: '',
     work: [],
@@ -248,6 +258,8 @@ export interface ResumeSummary {
   parsed_title: string;
   /** 来源：`editor` 的简历带结构化内容，可在编辑器里无损往返 */
   source: ResumeSource;
+  /** 编辑器创建时选的模板 code（上传的简历为 null） */
+  template_code?: string | null;
 }
 
 export type ResumeListResponse = Paginated<ResumeSummary>;
@@ -307,9 +319,30 @@ export interface TaskStep {
   cost: number | null;
 }
 
+/**
+ * 一次诊断的真实消耗（"让用户看到耗时和花费"）。
+ *
+ * 每个字段都有存在理由，不要精简成单个字段：
+ * - `cost` 是**总花费**，含证据 Agent；`steps_cost` / `evidence_cost` 拆开是为了
+ *   让用户（和排查问题的我们）知道钱花在哪 —— 证据 Agent 经常比 8 个主步骤加起来还贵；
+ * - `latency_ms` 是端到端墙钟（并行步骤会重叠，不能把 steps 相加）；
+ * - 未完成时这些是"已发生"的部分值，所以前端可以边跑边显示。
+ */
+export interface TaskUsage {
+  latency_ms: number;
+  tokens: number;
+  cost: number;
+  steps_cost: number;
+  evidence_cost: number;
+  evidence_tokens: number;
+  evidence_latency_ms: number;
+}
+
 export interface TaskStatusResponse {
   task_id: string;
   status: TaskStatus;
+  /** fixed = 固定流水线（快）；agentic = Agent 自主取证（慢但引用更全） */
+  mode?: 'fixed' | 'agentic';
   /** [0, 1] */
   progress: number;
   current_step: StepName | null;
@@ -317,11 +350,17 @@ export interface TaskStatusResponse {
   steps: TaskStep[];
   report_id: string | null;
   error: string | null;
+  /** ISO 时间戳（旧后端可能没有 → 前端按 null 处理） */
+  created_at?: string | null;
+  completed_at?: string | null;
+  usage?: TaskUsage | null;
 }
 
 export interface CreateTaskPayload {
   resume_id: string;
   jd_id: string;
+  /** 分析模式，默认 fixed */
+  mode?: 'fixed' | 'agentic';
 }
 
 export interface CreateTaskResponse {
@@ -366,9 +405,16 @@ export type EvidenceSource = 'resume' | 'jd' | 'knowledge';
 export interface FindingEvidence {
   source: EvidenceSource;
   quote: string;
-  /** [start, end] 字符偏移 */
-  span: [number, number];
-  field: string;
+  /**
+   * [start, end] 字符偏移。**可能缺失或为 null**：
+   * 规则层的结构性结论（覆盖率、篇幅、时间线计算）本来就不针对某一句原文，
+   * 引文定位失败时后端也会给 null。前端必须按可选处理，不要默认成 [0, 0]。
+   */
+  span?: [number, number] | null;
+  /** 证据落在哪个字段（如 `projects[0].highlights`）；规则类结论可能为空 */
+  field?: string | null;
+  /** 后端明确标记"这句引文没能在原文里精确定位" */
+  unverified?: boolean;
 }
 
 export interface Finding {
@@ -445,6 +491,12 @@ export interface Report {
   created_at: string;
   scores: ScoreBreakdown;
   risk_level: RiskLevel;
+  /**
+   * 双分制的"深度分"（仅 agentic 模式；fixed 模式为 null）。
+   * 与 `scores` 用同一套公式，唯一差别是**模型补充的发现项也参与扣分**。
+   * `delta` = 规则分 - 深度分（>=0），`extra_findings` = 模型独有的发现项数。
+   */
+  depth_scores?: DepthScores | null;
   summary: string;
   /** 至少 5 条，已按 severity 排序：red → yellow → green */
   findings: Finding[];
@@ -456,10 +508,62 @@ export interface Report {
   disclaimer: string;
 }
 
+/** 双分制的深度分（见 Report.depth_scores） */
+export interface DepthScores {
+  overall: number;
+  ats: number;
+  impact: number;
+  clarity: number;
+  match: number;
+  risk: number;
+  /** 规则分 - 深度分（>=0；0 表示模型没有发现规则之外的新问题） */
+  delta: number;
+  /** 模型独有的发现项数量 */
+  extra_findings: number;
+  /** 按维度拆分的模型独有发现项数量 */
+  extra_by_category: Record<string, number>;
+  /** 口径说明文案（后端生成，避免前端各写一版解释） */
+  explain: string;
+}
+
 /** §5.2 分享链接 */
 export interface ShareResponse {
   share_url: string;
   expires_at: string | null;
+  /** 是否包含简历原文引用 */
+  include_raw: boolean;
+  ttl_days: number;
+}
+
+/** 分享页公开数据：结论卡（默认不含原文；include_raw 时才有） */
+export interface SharedFinding {
+  finding_id: string;
+  category: FindingCategory;
+  severity: FindingSeverity;
+  title: string;
+  issue: string;
+  suggestion: string;
+  original_text?: string;
+  rewritten_text?: string;
+  evidence?: FindingEvidence;
+}
+
+export interface SharedReport {
+  report_id: string;
+  created_at: string;
+  /** 简历原始文件名（用户选择展示） */
+  resume_title: string;
+  jd_title: string;
+  scores: ScoreBreakdown;
+  risk_level: RiskLevel;
+  summary: string;
+  findings: SharedFinding[];
+  missing_keywords: string[];
+  action_items: string[];
+  disclaimer: string;
+  include_raw: boolean;
+  expires_at: string | null;
+  view_count: number;
 }
 
 /* ------------------------------------------------------------------ */
@@ -678,6 +782,18 @@ export interface BatchStatusResponse {
 /** 模板适用人群：应届 / 社招 / 转行。 */
 export type TemplateTarget = 'campus' | 'experienced' | 'transition';
 
+/**
+ * 模板气质（画廊「风格」筛选的依据）。
+ * 与后端 `services/resume_templates.py` 的 `STYLES` 一一对应。
+ */
+export type TemplateStyle = 'minimal' | 'business' | 'fresh' | 'creative';
+
+/**
+ * 版面骨架（画廊「布局」筛选的依据）：
+ * `single` = 单栏（ATS 友好），`sidebar` = 双栏 / 侧边栏。
+ */
+export type TemplateLayout = 'single' | 'sidebar';
+
 /** `sections[].key` 的固定集合。 */
 export type TemplateSectionKey =
   | 'basics'
@@ -690,7 +806,13 @@ export type TemplateSectionKey =
   | 'awards'
   | 'custom';
 
-/** §6.6 列表项 */
+/**
+ * §6.6 列表项。
+ *
+ * 版式元数据（`style` / `layout` / `design` / `accent` / `tags`）是后加的字段：
+ * 老后端（或缓存数据）可能没有，因此全部可选 —— 画廊会按 `design` / `target`
+ * 做兜底推断，缺字段不会让筛选整个失效。
+ */
 export interface TemplateSummary {
   code: string;
   name: string;
@@ -698,6 +820,16 @@ export interface TemplateSummary {
   target: TemplateTarget;
   role_family: string;
   section_count: number;
+  /** 整体气质，决定画廊「风格」tab */
+  style?: TemplateStyle;
+  /** 版面骨架，决定画廊「布局」筛选 */
+  layout?: TemplateLayout;
+  /** 真实版式的设计 id（celadon / navy / ivory / cobalt），对应 `TemplateDesignId` */
+  design?: string;
+  /** 主强调色（例如 `#5D7F6B`），用于卡片上的色点提示 */
+  accent?: string;
+  /** 展示标签（如 `["社招", "技术", "单栏"]`），场景筛选按这里匹配 */
+  tags?: string[];
 }
 
 export interface TemplateSection {
@@ -727,4 +859,14 @@ export interface CreateResumeFromEditorPayload {
   title: string;
   template_code: string | null;
   content: EditorContent;
+}
+
+/**
+ * §2.3 更新简历（`PUT /api/v1/resumes/{resume_id}`）。
+ * 至少传一个字段；后端据此重渲染 raw_text / parsed，并返回更新后的 Resume。
+ */
+export interface UpdateResumePayload {
+  title?: string;
+  template_code?: string | null;
+  content?: EditorContent;
 }

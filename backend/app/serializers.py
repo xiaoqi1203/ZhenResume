@@ -51,6 +51,23 @@ def _resume_source(resume: Resume | None) -> str:
     return "editor" if _editor_content_of(resume) else "upload"
 
 
+def _template_code_of(resume: Resume | None) -> str | None:
+    """简历选用的模板 code（存在 `parsed_json["template_code"]`，不是独立列）。
+
+    和 `editor_content` 同样的思路：pydantic 默认忽略未知键，所以
+    `ParsedResume.model_validate` 读到它不会报错，MVP 阶段不必引入数据库迁移。
+    上传的简历 / 未选模板的简历没有这个键，统一返回 None。
+    """
+    if resume is None:
+        return None
+    raw = resume.parsed_json or {}
+    code = raw.get("template_code")
+    if isinstance(code, str):
+        code = code.strip()
+        return code or None
+    return None
+
+
 # --------------------------------------------------------------------------- #
 # 简历 / JD
 # --------------------------------------------------------------------------- #
@@ -61,6 +78,8 @@ def serialize_resume(resume: Resume, *, with_text: bool = True) -> dict:
         "file_url": resume.file_url or "",
         "parsed": _safe_resume(resume.parsed_json),
         "source": _resume_source(resume),
+        # 模板 code：前端据此回填模板选择；上传的简历 / 未选模板为 None
+        "template_code": _template_code_of(resume),
         "editor_content": _editor_content_of(resume),
         "created_at": iso(resume.created_at),
     }
@@ -80,6 +99,7 @@ def serialize_resume_summary(resume: Resume) -> dict:
         "parsed_name": basics.get("name") or "",
         "parsed_title": (work[0].get("title") if work else "") or "",
         "source": _resume_source(resume),
+        "template_code": _template_code_of(resume),
     }
 
 
@@ -112,21 +132,78 @@ def serialize_step(step: WorkflowStep) -> dict:
 STEP_ORDER = ["parse", "jd_match", "ats", "impact", "risk", "suggestion", "report", "qc"]
 
 
-def serialize_task(task: AnalysisTask, *, steps: list[WorkflowStep] | None = None, report_id: str | None = None) -> dict:
-    """steps 未落库的步骤补成 pending，保证前端时间线始终有 8 行。"""
-    by_name = {s.step_name: s for s in (steps or [])}
-    ordered = [serialize_step(by_name[name]) if name in by_name else {"step_name": name, "status": "pending", "latency_ms": None, "tokens": None, "cost": None} for name in STEP_ORDER]
+def serialize_task(task: AnalysisTask, *, steps: list[WorkflowStep] | None = None, report_id: str | None = None, report_extra: dict | None = None) -> dict:
+    """steps 未落库的步骤补成 pending，保证前端时间线始终有 8 行。
 
+    `usage` 是**给用户看的账单**，不是内部 metric：
+    - `latency_ms`：端到端耗时（任务创建 → 完成），不是 8 步相加 ——
+      因为并行（ats/impact/risk 三路）与证据节点都不在该求和中，相加会明显少算；
+    - `tokens` / `cost`：8 个契约步 + 证据 Agent 节点的总和。
+      ⚠️ 证据节点**不写 workflow_steps**（非契约节点），它的消耗在
+      `report.extra_json.agent_trace` 里。不把这部分算进去，用户看到的花费会比实际少
+      一大截（实测证据节点一次 ¥0.13，比 8 步总和还贵）。
+    - 未完成时也给出**已发生**的消耗，前端可以实时显示，而不是完成才看得到。
+    """
+    by_name = {s.step_name: s for s in (steps or [])}
+    ordered = [
+        serialize_step(by_name[name])
+        if name in by_name
+        else {"step_name": name, "status": "pending", "latency_ms": None, "tokens": None, "cost": None}
+        for name in STEP_ORDER
+    ]
+
+    step_tokens = sum(int(s.get("tokens") or 0) for s in ordered)
+    step_cost = sum(float(s.get("cost") or 0) for s in ordered)
+    step_latency = sum(int(s.get("latency_ms") or 0) for s in ordered)
+
+    trace = (report_extra or {}).get("agent_trace") or {}
+    trace_tokens = int(trace.get("tokens") or 0) if isinstance(trace, dict) else 0
+    trace_cost = float(trace.get("cost") or 0) if isinstance(trace, dict) else 0
+    trace_latency = int(trace.get("latency_ms") or 0) if isinstance(trace, dict) else 0
+
+    finished = serialize_iso(task.completed_at) if task.completed_at else None
     return {
         "task_id": task.id,
         "status": task.status or "pending",
+        "mode": getattr(task, "mode", None) or "fixed",
         "progress": float(task.progress or 0),
         "current_step": task.current_step,
         "total_steps": len(STEP_ORDER),
         "steps": ordered,
         "report_id": report_id,
         "error": task.error,
+        "created_at": serialize_iso(task.created_at),
+        "completed_at": finished,
+        "usage": {
+            # 端到端墙钟：完成用 completed_at-created_at，未完成则统计各步之和作为下限
+            "latency_ms": _elapsed_ms(task, step_latency),
+            "tokens": step_tokens + trace_tokens,
+            "cost": round(step_cost + trace_cost, 4),
+            # 拆开展示，让用户知道"贵在哪"（证据节点通常是大头）
+            "steps_cost": round(step_cost, 4),
+            "evidence_cost": round(trace_cost, 4),
+            "evidence_tokens": trace_tokens,
+            "evidence_latency_ms": trace_latency,
+        },
     }
+
+
+def _elapsed_ms(task: AnalysisTask, fallback_ms: int) -> int:
+    """端到端耗时（毫秒）。
+
+    完成的任务用 `completed_at - created_at`（准确）；
+    运行中的任务两者都没有完成时间，用各步 latency 之和 —— 明知道会比真实值小
+    （并行步骤重叠），但它是"已确认发生的耗时"下界，比显示 0 更有信息量。
+    """
+    if task.completed_at and task.created_at:
+        delta = task.completed_at - task.created_at
+        return max(0, int(delta.total_seconds() * 1000))
+    return max(0, int(fallback_ms))
+
+
+def serialize_iso(value: datetime | None) -> str | None:
+    """`iso()` 的别名，语义更清楚（task 序列化里两处都用）。"""
+    return iso(value)
 
 
 def serialize_task_summary(task: AnalysisTask, report_id: str | None = None) -> dict:
@@ -201,6 +278,9 @@ def serialize_report(
             "risk": report.risk_score or 0,
         },
         "risk_level": report.risk_level or "yellow",
+        # 双分制（仅 agentic 模式）：深度分与规则分并列展示。
+        # fixed 模式为 None —— 前端据此隐藏"深度分析"卡片，不展示空壳。
+        "depth_scores": extra.get("depth_scores") or None,
         "summary": report.summary or "",
         "findings": [serialize_finding(f) for f in sorted(report.findings, key=lambda x: x.sort_order or 0)],
         "missing_keywords": extra.get("missing_keywords") or [],

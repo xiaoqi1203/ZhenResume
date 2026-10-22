@@ -88,20 +88,51 @@ def merge_node(state: WorkflowState) -> dict:
 
 
 def finalize_node(state: WorkflowState) -> dict:
-    """质检之后重新定稿分数。
+    """质检之后重新定稿分数 / 风险等级 / 摘要。
 
-    质检会剔除/降级发现项，若不重算，报告总分与展示的问题清单会自相矛盾；但**不能**用
-    `ctx.findings`（它含 LLM 每次增删的条目）—— 那会让同一份简历两次诊断分数不同。
-    因此用 `compute_scores_deterministic`：分数只由规则层基线决定。
+    为什么必须重算：qc 会剔除/降级发现项，`report` 节点看到的是 qc **之前**的清单。
+    不重算就会出现「摘要说 3 项高风险，报告只剩 2 条红」。
+
+    为什么仍然只有一份计算：这里与 `report` 节点用的是**同一个入口**
+    `analyze.finalize_report()` —— 分数基数取规则基线（与 LLM 无关，保证同一份简历
+    两次诊断分数一致），风险等级与红黄计数取 qc 之后的最终清单。
+    唯一的差别是「看哪一份 findings」，公式本身完全共享。
+
+    ## 双分制（`depth_scores`）
+
+    `workflow_mode == "agentic"` 时额外算一份深度分：同一套公式，但模型补充的
+    发现项也参与扣分。规则分（`scores`）**一个字都不变** —— 所以
+    「同一简历两次诊断分数一致」的承诺不受影响；深度分只用来回答
+    "模型额外抓到了几个规则没抓到的问题"，让用户感知到 agentic 模式多付的钱花在哪。
     """
     from ..services import analyze
 
     ctx = ctx_from_state(state)
-    return {
-        "scores": analyze.compute_scores_deterministic(
-            ctx.parsed_resume, ctx.parsed_jd, ctx.role_family, ctx.resume_text, ctx.jd_text
-        )
+    agentic = str(state.get("workflow_mode") or "").lower() == "agentic"
+    finalized = analyze.finalize_report(
+        parsed_resume=ctx.parsed_resume,
+        parsed_jd=ctx.parsed_jd,
+        role_family=ctx.role_family,
+        raw_text=ctx.resume_text,
+        jd_text=ctx.jd_text,
+        final_findings=ctx.findings,
+        include_depth=agentic,
+    )
+    summary = analyze.compose_summary(
+        scores=finalized["scores"],
+        risk_level=finalized["risk_level"],
+        breakdown=finalized["severity_breakdown"],
+        top_finding=finalized["top_finding"],
+        job_title=ctx.parsed_jd.title or "",
+    )
+    patch: dict = {
+        "scores": finalized["scores"],
+        "risk_level": finalized["risk_level"],
+        "summary": summary,
     }
+    if "depth_scores" in finalized:
+        patch["depth_scores"] = finalized["depth_scores"]
+    return patch
 
 
 # --------------------------------------------------------------------------- #
@@ -205,7 +236,8 @@ async def agentic_evidence_node(state: WorkflowState, runtime: Runtime[GraphCont
     放在 qc 之后的原因：
     - 只给"报告里真正会出现"的结论找依据，不浪费检索与 token；
     - Agent 不修改 findings（只挂 citations），因此不改变任何评分与结论；
-    - 引用还要再过一次 `verify_citations`（chunk 存在 + quote 逐字可定位）。
+    - 引用还要再过一次 `verify_citations`（chunk 存在 + quote 逐字可定位 +
+      必须是本次 `kb_search` 真实返回过的 chunk —— provenance 校验）。
 
     失败一律降级为"无引用"，绝不阻断报告产出。
     """
@@ -245,9 +277,21 @@ async def agentic_evidence_node(state: WorkflowState, runtime: Runtime[GraphCont
         )
         run = await BaseAgent(get_spec(settings.agentic_evidence_agent)).run(inputs)
 
+        # 本次检索**真的返回过**的切片集合（trace.retrieval_hits 由 _BudgetedRunner.kb_hits 记录）。
+        # 提示词把"chunk_id 必须是 kb_search 返回过的"写成铁律，但此前服务端只校验
+        # "chunk 存在 + quote 可定位" —— 模型猜中一个存在的 chunk_id 就能挂上引用。
+        # 这里把 provenance 交给 verify_citations 强制校验。
+        retrieved_chunk_ids: set[str] = set()
+        for hit in run.trace.get("retrieval_hits") or []:
+            for chunk_id in hit.get("chunk_ids") or []:
+                if chunk_id:
+                    retrieved_chunk_ids.add(str(chunk_id))
+
         raw_citations = (run.output or {}).get("citations") or []
         with session_scope() as db:
-            verified, vstats = verify_citations(db, raw_citations)
+            verified, vstats = verify_citations(
+                db, raw_citations, retrieved_chunk_ids=retrieved_chunk_ids
+            )
         attached, astats = attach_to_findings(findings, verified)
 
         # 报告级 knowledge_refs 合并去重（固定检索的 top-3 + Agent 引用到的切片）

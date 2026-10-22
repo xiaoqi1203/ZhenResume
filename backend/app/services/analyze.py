@@ -75,6 +75,12 @@ STRONG_VERBS = [
 
 EXAGGERATION_RE = re.compile(r"(精通|极其|非常熟练|深入掌握|全面负责|完全独立)")
 DISCRIMINATION_RE = re.compile(r"(性别|男性优先|女性优先|年龄限制|限男|限女|已婚|未婚|婚育|生育状况|户籍|本地户口|身高|体重|外貌|形象气质)")
+# 问题项过滤用的**宽口径**敏感词：只要问题描述里拿这些字段说事，就不该出现在报告里。
+# 与 DISCRIMINATION_RE 的区别：这里包含裸词「年龄」「性别」，因为要拦住
+# LLM 写出的「年龄偏大」「性别不符」这类自由表述。
+_SENSITIVE_FINDING_RE = re.compile(
+    r"(年龄|性别|婚育|已婚|未婚|生育|备孕|孕产|户籍|户口|身高|体重|外貌|形象气质)"
+)
 
 METRIC_HINTS: dict[str, list[str]] = {
     "backend": ["日均调用量 / QPS", "P99 延迟前后对比", "可用性 (如 99.95%)", "支撑的业务规模（订单量/用户数）"],
@@ -121,9 +127,35 @@ def resume_haystack(parsed: ParsedResume, raw_text: str = "") -> str:
     return "\n".join(p for p in parts if p)
 
 
+def _keyword_hit(keyword: str, haystack_lower: str) -> bool:
+    """关键词是否在简历里出现（haystack 已转小写）。
+
+    英文技术词必须按**词边界**匹配，否则会误判：
+    - `Go` 会命中 `Django` / `Google`
+    - `Java` 会命中 `JavaScript`
+    中文词没有词边界概念，直接子串匹配。
+    """
+    kw = (keyword or "").strip().lower()
+    if not kw:
+        return False
+    if kw.isascii():
+        return re.search(rf"(?<![a-z0-9+#.]){re.escape(kw)}(?![a-z0-9+#.])", haystack_lower) is not None
+    return kw in haystack_lower
+
+
 def missing_keywords(parsed_resume: ParsedResume, parsed_jd: ParsedJd, raw_text: str = "") -> tuple[list[str], list[str]]:
-    """返回 (缺失关键词, 已覆盖关键词)。大小写不敏感，中英混合。"""
+    """返回 (缺失关键词, 已覆盖关键词)。大小写不敏感，中英混合。
+
+    「A 或 B」这类择一要求单独处理（`parsed_jd.skill_groups`）：
+    - 命中任意一项 → 整组算 1 项「已覆盖」；
+    - 一项都不命中 → 整组算 1 项「缺失」，文案合并为「A 或 B」。
+    组内成员不再逐个计数，避免"简历有 Java 却报缺少 Go"这类误报。
+    """
     haystack = resume_haystack(parsed_resume, raw_text).lower()
+
+    groups = [g for g in (parsed_jd.skill_groups or []) if len(g) >= 2]
+    grouped = {kw.lower() for g in groups for kw in g}
+
     required = parsed_jd.all_skills()
     missing: list[str] = []
     covered: list[str] = []
@@ -131,19 +163,79 @@ def missing_keywords(parsed_resume: ParsedResume, parsed_jd: ParsedJd, raw_text:
         kw = (kw or "").strip()
         if not kw:
             continue
-        if kw.lower() in haystack:
+        if kw.lower() in grouped:
+            continue  # 由下面的择一组统一计数
+        if _keyword_hit(kw, haystack):
             covered.append(kw)
         else:
             missing.append(kw)
+
+    for group in groups:
+        label = " 或 ".join(group)
+        if any(_keyword_hit(kw, haystack) for kw in group):
+            covered.append(label)
+        else:
+            missing.append(label)
+
     return missing, covered
+
+
+def satisfied_choice_keywords(
+    parsed_resume: ParsedResume, parsed_jd: ParsedJd, raw_text: str = ""
+) -> set[str]:
+    """择一组里只要命中任意一项，**组内全部成员**都算已满足（小写）。
+
+    用途：LLM 仍可能从 JD 技能清单里挑出组内未写的另一门语言（如「Go」），
+    用它把这类条目过滤掉，避免"简历有 Java 却建议补 Go"。
+    """
+    haystack = resume_haystack(parsed_resume, raw_text).lower()
+    satisfied: set[str] = set()
+    for group in parsed_jd.skill_groups or []:
+        if len(group) < 2:
+            continue
+        if any(_keyword_hit(kw, haystack) for kw in group):
+            satisfied.update(kw.lower() for kw in group)
+    return satisfied
+
+
+def coverage_units(
+    parsed_resume: ParsedResume, parsed_jd: ParsedJd, raw_text: str = ""
+) -> list[tuple[list[str], list[str]]]:
+    """把 JD 要求拆成「覆盖单元」，供**打分**使用。
+
+    普通关键词 = 1 个单元（1 项要求）；
+    「A/B/C 择一」= 按成员拆成多项要求，命中几个算几个。
+
+    为什么不能只按"组是否命中"二元计分：
+    JD 写「熟练掌握 Java/Go/C++ 等其中一门」而简历写了两门，如果整组算 1 项，
+    覆盖率会是 100%，但实际只满足 2/3 —— 用户要求"只写了 2 个就给 2/3 的分"。
+
+    返回 `[(members, hit_members), ...]`。
+    """
+    haystack = resume_haystack(parsed_resume, raw_text).lower()
+    groups = [g for g in (parsed_jd.skill_groups or []) if len(g) >= 2]
+    grouped = {kw.lower() for g in groups for kw in g}
+
+    units: list[tuple[list[str], list[str]]] = []
+    for kw in parsed_jd.all_skills():
+        kw = (kw or "").strip()
+        if not kw or kw.lower() in grouped:
+            continue
+        units.append(([kw], [kw] if _keyword_hit(kw, haystack) else []))
+    for group in groups:
+        hits = [kw for kw in group if _keyword_hit(kw, haystack)]
+        units.append((list(group), hits))
+    return units
 
 
 def ats_findings(parsed: ParsedResume, parsed_jd: ParsedJd, raw_text: str, jd_text: str) -> list[dict]:
     out: list[dict] = []
 
     missing, covered = missing_keywords(parsed, parsed_jd, raw_text)
-    total = len(missing) + len(covered)
-    ratio = (len(covered) / total) if total else 1.0
+    units = coverage_units(parsed, parsed_jd, raw_text)
+    total = sum(len(members) for members, _ in units)
+    hits = sum(len(hit) for _, hit in units)
+    ratio = (hits / total) if total else 1.0
 
     if missing:
         # 严重度按「整体覆盖率」定，而不是给每个缺失词都标红 ——
@@ -524,50 +616,239 @@ def timeline_gaps(parsed: ParsedResume, raw_text: str = "") -> list[dict]:
     return out
 
 
-def risk_findings(parsed: ParsedResume, raw_text: str) -> list[dict]:
-    out = timeline_gaps(parsed, raw_text)
+# --------------------------------------------------------------------------- #
+# 技能分组（只用于把"补进技能栏"的建议写成可直接粘贴的分组行，不影响任何判定）
+# --------------------------------------------------------------------------- #
+_TECH_GROUPS: list[tuple[str, set[str]]] = [
+    ("编程语言", {"java", "python", "go", "golang", "c++", "c#", "javascript", "typescript",
+                  "php", "ruby", "rust", "scala", "kotlin", "swift"}),
+    ("前端框架", {"react", "vue", "angular", "next.js", "nuxt", "node.js", "express", "webpack", "vite"}),
+    ("后端框架", {"django", "flask", "fastapi", "spring", "spring boot", "spring cloud", "mybatis",
+                  "hibernate", "gin", "echo"}),
+    ("数据存储", {"mysql", "postgresql", "oracle", "sql server", "mongodb", "redis", "elasticsearch",
+                  "clickhouse", "hbase", "tidb", "sqlite", "sql"}),
+    ("中间件", {"kafka", "rabbitmq", "rocketmq", "pulsar", "zookeeper", "nginx"}),
+    ("工具与协作", {"docker", "kubernetes", "k8s", "helm", "istio", "jenkins", "gitlab ci", "ci/cd",
+                    "devops", "terraform", "ansible", "git", "linux", "maven", "gradle"}),
+]
 
-    # 技能与项目矛盾：项目里用了但技能栏没写的技术
-    project_tech = {t.lower() for p in parsed.projects for t in p.tech}
+# 「能力概念词」——它们出现在 TECH_DICT 里是为了给 JD 侧做关键词匹配，
+# 但**不该**被当作"要补进技能栏的技术名"推荐给用户（写进技能栏反而会被扣分）。
+_CAPABILITY_CONCEPT_WORDS = {
+    "微服务", "分布式", "高并发", "高可用", "性能优化", "领域驱动设计", "DDD", "中台",
+    "产品设计", "需求分析", "用户研究", "数据分析", "项目管理", "敏捷开发", "Scrum",
+    "跨部门协作", "UI设计", "交互设计",
+}
+
+
+def _tech_group(tech: str) -> str:
+    low = (tech or "").strip().lower()
+    for group, members in _TECH_GROUPS:
+        if low in members:
+            return group
+    return "其他技术"
+
+
+# 行首的列表编号/项目符号：`1. ` / `（2）` / `- ` / `· `
+_LINE_PREFIX_RE = re.compile(r"^\s*(?:[（(]?\d{1,2}[)）.、．]|[①-⑳]|[-–—•·※▶▪◦])\s*")
+
+
+def _strip_line_prefix(line: str) -> str:
+    """去掉 PDF 抽取常见的行首编号/项目符号，便于判断这一行"真正在说什么"。"""
+    return _LINE_PREFIX_RE.sub("", (line or "").strip()).strip()
+
+
+# 「技术栈：A、B、C；基于 X 实现 Y…」——只取冒号后到第一个句号/分号为止的那串技术名。
+# 为什么必须截：PDF 把 `技术栈：` 那一条和后面几条要点挤进了同一行，
+# 整行当引文会让用户看到 100 多个字符，真正相关的那 6 个技术反而被埋住。
+_TECH_LIST_SPLIT_RE = re.compile(r"[；;。]")
+
+
+def _tidy_quote(line: str) -> str:
+    """把"技术栈"那一行裁成干净的一句引文（保留原文措辞，只截断）。
+
+    只做截断，不改写 —— 引文必须能在原文里**逐字定位**（`locate_quote` 会校验），
+    所以任何"改写"都会让证据失效。
+    """
+    text = _strip_line_prefix(line)
+    if not re.match(r"^(技术栈|技术选型|使用工具|开发环境)\s*[:：]", text):
+        return text
+    first = _TECH_LIST_SPLIT_RE.split(text, maxsplit=1)[0].strip()
+    # 没有分号/句号可切（PDF 抽成一行了）时，按顿号/逗号在 24 字内断句，保持"一句完整的话"
+    if len(first) > 40:
+        for sep in ("、", "，", ","):
+            idx = first.rfind(sep, 0, 40)
+            if idx >= 16:
+                return first[:idx].strip()
+        return first[:40].strip()
+    return first
+
+
+def _skills_supplement_text(techs: list[str]) -> str:
+    """把缺失技术写成**可直接粘贴进技能栏**的分组行。
+
+    为什么不能只给一句「专业技能补充：vue」（实测用户第一个吐槽点）：
+    1. 大小写被丢了（`vue` / `springboot`），粘进简历反而变成新的减分项；
+    2. 没写放在哪一组，用户还得自己判断，复制按钮等于没用。
+
+    所以这里按技术归类输出，且**保留简历/词表里的原始大小写**。
+    """
+    grouped: dict[str, list[str]] = {}
+    for tech in techs:
+        grouped.setdefault(_tech_group(tech), []).append(tech)
+    lines = [f"专业技能（在「{group}」分组下补一行）：{'、'.join(names)}" for group, names in grouped.items()]
+    return "\n".join(lines)
+
+
+def _skill_project_consistency_findings(parsed: ParsedResume, raw_text: str) -> list[dict]:
+    """技能栏 ↔ 项目技术栈的双向一致性检查。
+
+    只产出**一条**结论（多条同名结论会互相挤占报告条数），且必须满足下面全部前提，
+    否则宁可不报 —— 这一条踩过的误报代价比漏报大：
+
+    1. **技能栏必须被可靠解析**。判断标准不是"非空"，而是"抽出来的每一项都像技术名"。
+       实测：`extract_skills` 对分行写法（`1. 编程语言：熟练掌握 Java，了解 Python`）
+       会把整句切碎，产出 `['编程语⾔：熟练掌握', '了解', '基础语法', ...]` 这类碎片。
+       这时与项目技术栈比对毫无意义（碎片永远不会等于 `Vue`），却会稳定误报
+       「技能与项目对不上」。所以先在 `_skills_are_reliable()` 里判定，不可靠就整条跳过。
+    2. **技能栏非空**（空技能栏由 ATS Agent 单独出一条更强的 red，不在这里重复）。
+    3. **确实有项目技术未登记**（双向子串判断，`Spring Cloud` 与 `Spring` 互认）。
+
+    引文必须是**项目里真正提到该技术的那一行**，而不是随便取第一条 highlight：
+    实测 `original_text` 取了项目第 1 条要点（讲买家/卖家双角色，根本不含 `Vue`），
+    于是"证据来源：简历原文"旁边挂着一句和结论无关的引文，用户一眼就看穿不可信。
+    """
+    if not parsed.skills or not parsed.projects:
+        return []
+
+    project_tech: list[str] = []
+    for project in parsed.projects:
+        for tech in project.tech:
+            if tech not in project_tech:
+                project_tech.append(tech)
+    if not project_tech:
+        return []
+
+    if not _skills_are_reliable(parsed.skills):
+        return []
+
     skill_set = {s.lower() for s in parsed.skills}
 
     def _listed(tech: str) -> bool:
+        low = tech.lower()
         # 双向子串判断：既避免 "Spring Cloud" 因为技能栏写作 "Spring"/"Cloud" 而误报，
         # 也避免 "SQL" 因为技能栏只有 "MySQL" 而误报。宁可漏报也不制造假警报。
-        return any(tech in skill or skill in tech for skill in skill_set)
+        return any(low in skill or skill in low for skill in skill_set)
 
     unlisted = [t for t in project_tech if not _listed(t) and len(t) >= 2]
-    if unlisted and parsed.skills:
-        quote = next((p.highlights[0] for p in parsed.projects if p.highlights and any(t.lower() in " ".join(p.tech).lower() for t in unlisted)), "")
-        out.append(
-            {
-                "category": "risk",
-                "severity": "yellow",
-                "title": "项目里用到的技术在技能栏没有列出",
-                "original_text": quote,
-                "issue": f"检测到 {', '.join(unlisted[:4])} 出现在项目描述中，但技能栏未登记。技能与项目对不上会被认为技能栏是堆砌的。",
-                "suggestion": "把项目里实际用过的关键技术补进技能栏，保持两处一致。",
-                "rewritten_text": f"专业技能补充：{', '.join(unlisted[:4])}",
-                "evidence": _evidence("resume", quote, None, raw_text, "") if quote else {"source": "resume", "quote": "", "span": None, "field": "skills", "unverified": True},
-            }
-        )
+    if not unlisted:
+        return []
 
-    # 公平性/合规风险：简历或 JD 中出现歧视性字段
-    hit = DISCRIMINATION_RE.search(raw_text or "")
-    if hit:
-        out.append(
-            {
-                "category": "risk",
-                "severity": "yellow",
-                "title": f"简历中出现与岗位无关的敏感信息「{hit.group(0)}」",
-                "original_text": hit.group(0),
-                "issue": "婚育、户籍、年龄、身高体重等信息与岗位能力无关，容易引发合规争议，也可能带来先入为主的偏见。",
-                "suggestion": "删除该类信息，把版面留给与岗位直接相关的能力与成果。",
-                "rewritten_text": "（建议直接删除该字段）",
-                "evidence": _evidence("resume", hit.group(0), None, raw_text, ""),
-            }
-        )
+    # 优先报「有专名的技术」，抽象能力词（性能优化/微服务/分布式）放后面。
+    #
+    # 为什么：`TECH_DICT` 里混着两类词 —— `Vue`/`MyBatis`（可被追问、可写进技能栏的技术名）
+    # 与 `性能优化`/`分布式`（能力描述）。后者写进「专业技能」反而会被扣分，
+    # 把它们和 `Vue` 并列成「补充：Vue、性能优化」会让用户觉得建议不专业。
+    # 如果一处专名技术都没有，才退回报能力词（总比不报强）。
+    named = [t for t in unlisted if t not in _CAPABILITY_CONCEPT_WORDS]
+    chosen = named or unlisted
 
+    # 引文 = 项目里真正提到这些技术的那一行
+    #
+    # ⚠️ 这里的选法与老实现完全不同（老实现直接取 `project.highlights[0]`），原因：
+    # 用户报告里那条结论挂的引文是「独立设计并开发前后端分离交易系统，支持买家/卖家双角色…」，
+    # 这句话里**根本没有 Vue**。用户一眼就能看出"证据来源：简历原文"是假的。
+    #
+    # 三层偏好：
+    #   ① `技术栈：…` 标签行 —— 最直观，一句话点明技术清单；
+    #   ② 含该技术名的任意要点 —— 次优，至少能对上；
+    #   ③ 找不到就**留空**并标 unverified —— 绝不用无关句子凑数。
+    #
+    # ⚠️ 标签行判定必须容忍行首编号：PDF 抽出来的项目要点常写成 `2. 技术栈： SpringBoot 、 Vue`，
+    #    用 `^(技术栈)` 会漏掉，于是退到"含技术名的任意要点"，命中 Cursor 那行 —— 引文又错了。
+    unlisted_lower = {t.lower() for t in chosen}
+    quote, quote_field = "", None
+    for index, project in enumerate(parsed.projects):
+        highlights = [h.strip() for h in (project.highlights or []) if h.strip()]
+        if not highlights:
+            continue
+
+        def _hits(line: str) -> bool:
+            low = line.lower()
+            return any(tech in low for tech in unlisted_lower)
+
+        def _is_tech_label(line: str) -> bool:
+            # 允许 `2. ` / `（3）` / `· ` 之类前缀，再判断是否以「技术栈：」开头
+            return bool(re.match(r"^(技术栈|技术选型|使用工具|开发环境)\s*[:：]", _strip_line_prefix(line)))
+
+        hit_line = next(
+            (h for h in highlights if _is_tech_label(h) and _hits(h)),
+            next((h for h in highlights if _hits(h)), ""),
+        )
+        if hit_line:
+            quote = _tidy_quote(hit_line)
+            quote_field = f"projects[{index}].highlights"
+            break
+
+    # 兜底：项目要点里找不到出处时，用"技术词本身"作证据，并明确标 unverified。
+    # 绝不用项目第一条要点凑数 —— 那是"引文不支持结论"的典型。
+    evidence = (
+        _evidence("resume", quote, quote_field, raw_text, "")
+        if quote
+        else {"source": "resume", "quote": "", "span": None, "field": "projects[].tech", "unverified": True}
+    )
+
+    listed_text = "、".join(chosen[:5])
+    return [
+        {
+            "category": "risk",
+            "severity": "yellow",
+            "title": "项目里用到的技术在技能栏没有列出",
+            "original_text": quote,
+            "issue": (
+                f"项目里写了 {listed_text}，但技能栏没有登记。"
+                "HR/ATS 按技能栏筛人时，这些真实用过的技术会被漏掉；"
+                "而技能栏与项目对不上，也容易被当成「技能栏是随手堆的」。"
+            ),
+            "suggestion": "把项目里确实用过的技术补进技能栏对应分组（只补你真能讲清楚的），让两处一致。",
+            "rewritten_text": _skills_supplement_text(chosen[:5]),
+            "evidence": evidence,
+        }
+    ]
+
+
+# 技能栏里"整句碎片"的特征：含冒号/括号说明、或是动词短语而不是技术名
+_SKILL_FRAGMENT_RE = re.compile(
+    r"[:：。，,；;]|^(熟练|熟悉|了解|掌握|擅长|精通|能够|可以|使用|基于|能|会)|"
+    r"(使用|开发|实现|进行|操作|运用|掌握|熟练|了解|熟悉)$"
+)
+
+
+def _skills_are_reliable(skills: list[str]) -> bool:
+    """技能栏是否被可靠解析成"技术名列表"（而不是整句被切碎的碎片）。
+
+    判据：**含 2 个字符及以上、且不是碎片**的项占比 >= 60%，且至少有 2 项。
+    不可靠时不报一致性结论 —— 否则会把"解析器的锅"算到用户头上。
+
+    实测反例（用户真实简历，分行写法）：
+        ['Elasticsearch', 'Python', 'Spring', '编程语⾔：熟练掌握', '了解', '基础语法', ...]
+    其中 `编程语⾔：熟练掌握` / `了解` / `基础语法` 都是碎片，占比过半 → 判定不可靠。
+    """
+    meaningful = [s for s in skills if len(s.strip()) >= 2 and not _SKILL_FRAGMENT_RE.search(s.strip())]
+    if len(meaningful) < 2:
+        return False
+    return len(meaningful) / max(len(skills), 1) >= 0.6
+
+
+def risk_findings(parsed: ParsedResume, raw_text: str) -> list[dict]:
+    out = timeline_gaps(parsed, raw_text)
+
+    out.extend(_skill_project_consistency_findings(parsed, raw_text))
+
+    # 合规：年龄 / 性别 / 婚育等字段与岗位能力无关，**不再作为"问题项"输出**。
+    # 用户明确要求："年龄性别与岗位无关易引发合规争议，这并不是问题"。
+    # 这类字段仍然会在 RiskAgent 的 sensitive_fields_* 里作为中性信息记录，
+    # 但不会进入 findings（不进报告问题清单、不扣分、不影响排序）。
     return out
 
 
@@ -620,23 +901,10 @@ def gap_findings(parsed_resume: ParsedResume, parsed_jd: ParsedJd, raw_text: str
                 }
             )
 
-    coverage_missing, coverage_hit = missing_keywords(parsed_resume, parsed_jd, raw_text)
-    total = len(coverage_missing) + len(coverage_hit)
-    if total and coverage_hit:
-        ratio = len(coverage_hit) / total
-        if ratio < 0.6:
-            out.append(
-                {
-                    "category": "gap",
-                    "severity": "yellow",
-                    "title": f"与岗位要求的关键词重合度偏低（{ratio:.0%}）",
-                    "original_text": "",
-                    "issue": f"JD 要求的 {total} 项能力中，简历只覆盖了 {len(coverage_hit)} 项。同岗位竞争者通常会覆盖 70% 以上。",
-                    "suggestion": "对照缺失清单逐项确认：确实具备的补写关键词，确实不具备的用相邻经验做迁移表述。",
-                    "rewritten_text": "在技能栏与项目描述中对齐 JD 用词（同一能力用 JD 的写法表达，如「服务治理」而非「微服务管理」）",
-                    "evidence": {"source": "jd", "quote": "", "span": None, "field": "parsed.skills_core", "unverified": True},
-                }
-            )
+    # 说明：不再单独产出「关键词重合度偏低」这条建议。
+    # 覆盖率已经体现在 ATS 维度分与逐条关键词缺失里，再写一条"重合度 38%"属于同义重复，
+    # 而且给出的改写建议（对齐 JD 用词）对"服务治理 vs 微服务管理"这类近义词没有实际价值。
+    # 用户反馈：这条没必要。
 
     return out
 
@@ -650,7 +918,15 @@ SemanticCovered = list[tuple[str, str]]
 
 
 def _tier_of(kw: str, parsed_jd: ParsedJd) -> str:
-    """判断一条 JD 要求属于哪一层：core / bonus / keyword。"""
+    """判断一条 JD 要求属于哪一层：core / bonus / keyword。
+
+    择一组（`Java 或 Go`）没有单一归属：取组内成员里最高的一层
+    （core > bonus > keyword），否则择一条件会被当成最弱的"概念词"而少算权重。
+    """
+    if " 或 " in (kw or ""):
+        tiers = [_tier_of(part, parsed_jd) for part in kw.split(" 或 ") if part.strip()]
+        if tiers:
+            return min(tiers, key=lambda t: {"core": 0, "bonus": 1, "keyword": 2}.get(t, 2))
     k = (kw or "").lower()
     if any(k == s.lower() for s in parsed_jd.skills_core):
         return "core"
@@ -701,9 +977,9 @@ def _dedupe_semantic(
 
 
 def _weighted_coverage(
-    missing: list[str],
-    covered: list[str],
+    parsed_resume: ParsedResume,
     parsed_jd: ParsedJd,
+    raw_text: str = "",
     semantic_covered: SemanticCovered | None = None,
 ) -> tuple[float, float, float]:
     """分层加权覆盖率：Σ(命中项权重) / Σ(全部项权重)。
@@ -715,13 +991,16 @@ def _weighted_coverage(
     verified = _verified_keyword_set(semantic_covered)
     hit_w = 0.0
     miss_w = 0.0
-    for kw in covered:
-        hit_w += _tier_weight(_tier_of(kw, parsed_jd))
-    for kw in missing:
-        if kw.lower() in verified:
-            hit_w += _tier_weight(_tier_of(kw, parsed_jd))
-        else:
-            miss_w += _tier_weight(_tier_of(kw, parsed_jd))
+    # 按「覆盖单元」逐项计权：择一组里的每个成员各算一项，
+    # 命中 2/3 就是 2/3 的权重，而不是"整组 0 分"或"整组满分"。
+    for members, hit_members in coverage_units(parsed_resume, parsed_jd, raw_text):
+        hit_lower = {kw.lower() for kw in hit_members}
+        for kw in members:
+            weight = _tier_weight(_tier_of(kw, parsed_jd))
+            if kw.lower() in hit_lower or kw.lower() in verified:
+                hit_w += weight
+            else:
+                miss_w += weight
     total_w = hit_w + miss_w
     if total_w <= 0:
         return 0.85, 0.0, 0.0
@@ -750,6 +1029,8 @@ def compute_scores(
     parsed_jd: ParsedJd,
     raw_text: str,
     semantic_covered: SemanticCovered | None = None,
+    *,
+    include_llm: bool = False,
 ) -> dict[str, int]:
     """按 aaa.md §六.3 的权重合成总分。
 
@@ -760,17 +1041,23 @@ def compute_scores(
     它只做一件事——把"其实是表述差异"的关键词计入覆盖，从而修正假差距造成的系统性低估。
     纯函数约束：**不查库、不调模型**，只吃调用方传入并已校验的数据。
 
+    `include_llm`（双分制，默认 False = 行为与改动前逐位相同）：
+    - False：只认规则层发现项 → **规则分**，可回归、可横向比较（同一简历两次同分）；
+    - True：连模型补充的发现项一起扣分 → **深度分**，反映"模型额外抓到了多少问题"。
+    两者用**同一套公式**，唯一差别是参与扣分的条目集合 —— 这样"两个分为什么不同"
+    可以用一句话解释清楚，而不是两套黑箱。
+
     扣分模型的两个关键取舍：
     1. **同一事实只扣一次**：比如「3 条经历没量化」与「全篇没量化」是同一个根因，
        因此每个维度最多只计入 2 条发现项的扣分（按严重度取前 2），避免重复惩罚。
     2. **分数线主要看客观比率**（关键词覆盖率、量化比例），发现项只做温和修正。
        这样分数对"报告条数"不敏感，只对简历本身的质量敏感，二次诊断对比才有意义。
-    3. **只认规则层发现项（`origin != "llm"`）**：live 模式下 LLM 会自行增删发现项，
+    3. **规则分只认规则层发现项（`origin != "llm"`）**：live 模式下 LLM 会自行增删发现项，
        如果分数跟着变，同一份简历两次诊断就会得到不同分数 —— 实测已发生
        （risk 78 ↔ 95），"改完再测对比分数"这个卖点会直接失真。
-       LLM 补充的条目照常展示在报告里，但不参与扣分。
+       LLM 补充的条目照常展示在报告里，但不参与规则分扣分（只参与深度分）。
     """
-    scored = [f for f in findings if is_rule_origin(f)]
+    scored = list(findings) if include_llm else [f for f in findings if is_rule_origin(f)]
     missing, covered = missing_keywords(parsed_resume, parsed_jd, raw_text)
 
     # ---- 语义校验通过的等价映射（V2.0）----
@@ -786,7 +1073,7 @@ def compute_scores(
 
     used_v2 = str(getattr(settings, "scoring_version", "v2") or "v2").lower() == "v2"
     if used_v2:
-        coverage, _hit_w, _total_w = _weighted_coverage(missing, covered, parsed_jd, semantic_covered)
+        coverage, _hit_w, _total_w = _weighted_coverage(parsed_resume, parsed_jd, raw_text, semantic_covered)
     else:
         total_kw = len(missing) + len(covered)
         coverage = (len(covered) / total_kw) if total_kw else 0.85
@@ -859,11 +1146,16 @@ def compute_scores_deterministic(
     raw_text: str,
     jd_text: str,
     semantic_covered: SemanticCovered | None = None,
+    *,
+    include_llm: bool = False,
 ) -> dict[str, int]:
     """报告定稿用的评分入口：只吃规则层基线，与 LLM 无关。
 
     `semantic_covered`：服务端已校验过引文定位的语义等价映射（见 compute_scores）。
     默认 None → 与改动前逐位相同。
+
+    `include_llm`：仅用于**深度分**（双分制）。规则分恒为 False，
+    所以「同一份简历两次诊断分数一致」这条承诺不受影响。
     """
     return compute_scores(
         rule_baseline_findings(parsed_resume, parsed_jd, role_family, raw_text, jd_text),
@@ -871,7 +1163,196 @@ def compute_scores_deterministic(
         parsed_jd,
         raw_text,
         semantic_covered=semantic_covered,
+        include_llm=include_llm,
     )
+
+
+# --------------------------------------------------------------------------- #
+# 报告定稿：分数 + 风险等级 + 摘要，**一次算完**
+# --------------------------------------------------------------------------- #
+# 为什么必须一次算完（实测缺陷）：
+# 原来 `report` 节点用 `compute_scores(ctx.findings, …)`（含 LLM 条目、qc 之前）算摘要，
+# 而落库用 `compute_scores_deterministic(...)`（规则基线）—— **两次不同计算**。
+# 结果报告页把 `overall=85` 和「综合得分 84 分」并排展示（sample_resume_2_medium，5 次连跑必现）。
+#
+# 现在的定稿口径：
+# 1. **只有一个入口** `finalize_report()`：分数、risk_level、摘要里引用的数字都从这里出；
+# 2. **分数基数仍是规则基线**（保持"同一份简历两次诊断分数一致"）；
+# 3. **风险等级吸收全维度的红色** —— 「风险」不是只有 `category=="risk"` 才算风险。
+
+# 红色条目数达到这个值，风险等级直接判 red（不看单项 risk 分）
+RED_LEVEL_THRESHOLD = 3
+
+
+def red_count(findings: list[dict]) -> int:
+    """红色条目数（不限 category）。"""
+    return len([f for f in findings if f.get("severity") == "red"])
+
+
+def risk_level_from_findings(risk_score: int, findings: list[dict]) -> str:
+    """契约 §5.1 的派生规则 + 「红色条目不得配绿/黄等级」的一致性约束。
+
+    基线口径（契约）：`>=80 green`、`60-79 yellow`、`<60 red`。
+    在此基础上按**全维度**红色条数收紧 —— 只看 `category=="risk"` 会让
+    「2 条 impact 红 + risk 分 100 → green」出现在报告里（实测空简历就是这样）。
+    """
+    level = risk_level_from_score(risk_score)
+    reds = red_count(findings)
+    if reds >= RED_LEVEL_THRESHOLD:
+        return "red"
+    if reds >= 1 and level == "green":
+        return "yellow"
+    return level
+
+
+def summary_level_text(risk_level: str) -> str:
+    return {"green": "风险较低", "yellow": "存在若干需要处理的风险点", "red": "存在明显风险，建议优先修正"}[risk_level]
+
+
+def finalize_report(
+    *,
+    parsed_resume: ParsedResume,
+    parsed_jd: ParsedJd,
+    role_family: str,
+    raw_text: str,
+    jd_text: str,
+    final_findings: list[dict],
+    semantic_covered: SemanticCovered | None = None,
+    include_depth: bool = False,
+) -> dict:
+    """报告定稿唯一入口：返回 `{scores, risk_level, severity_breakdown, top_finding}`。
+
+    - `final_findings`：**用户最终看到的**发现项（qc 之后）；
+    - 分数基数取规则基线（确定性）；风险等级与红/黄计数取 `final_findings`；
+    - `scores` 额外带 `red_findings`，让分数与摘要的红条数有同一个来源。
+
+    `include_depth`（双分制，默认 False = 行为与改动前逐位相同）：
+    为 True 时额外算一份 `depth_scores` —— 用**同一套公式**，但让模型补充的发现项
+    也参与扣分。规则分（`scores`）仍然只认规则层，因此不受影响。
+
+    ## 为什么要双分（而不是让 Agent 结论反哺评分）
+
+    项目的硬承诺是「同一份简历两次诊断分数一致」，这是「改完再测、对比分数变化」
+    这个核心卖点成立的前提。一旦让 Agent 的结论参与规则分，模型每次写法不同，
+    分数就会漂（实测发生过 risk 78 ↔ 95），承诺直接失效。
+
+    但用户付了 agentic 模式 4–7 倍的成本，如果分数完全不变，"深度分析"的价值
+    就只剩几条依据 —— 感知不到。双分制把两件事分开：
+    - **规则分**：可回归、可横向比较（"我改完简历，78 → 85"仍然成立）；
+    - **深度分**：体现"模型额外抓到了几个规则没抓到的问题"。
+    """
+    scored = compute_scores_deterministic(
+        parsed_resume, parsed_jd, role_family, raw_text, jd_text, semantic_covered=semantic_covered
+    )
+    ordered = sort_findings(list(final_findings or []))
+    breakdown = {sev: len([f for f in ordered if f.get("severity") == sev]) for sev in ("red", "yellow", "green")}
+    scores = {**scored, "red_findings": breakdown["red"]}
+    top = next((f for f in ordered if f.get("severity") == "red"), None) or (ordered[0] if ordered else None)
+    result = {
+        "scores": scores,
+        "risk_level": risk_level_from_findings(scored["risk"], ordered),
+        "severity_breakdown": breakdown,
+        "top_finding": top,
+    }
+    if include_depth:
+        result["depth_scores"] = compute_depth_scores(
+            final_findings=ordered,
+            parsed_resume=parsed_resume,
+            parsed_jd=parsed_jd,
+            raw_text=raw_text,
+            rule_scores=scores,
+            semantic_covered=semantic_covered,
+        )
+    return result
+
+
+def compute_depth_scores(
+    *,
+    final_findings: list[dict],
+    parsed_resume: ParsedResume,
+    parsed_jd: ParsedJd,
+    raw_text: str,
+    rule_scores: dict,
+    semantic_covered: SemanticCovered | None = None,
+) -> dict:
+    """深度分：同一套公式，但**模型补充的发现项也参与扣分**。
+
+    ## 口径必须写清楚（否则用户会问"两个分为什么不一样"）
+
+    - 覆盖率基数（关键词覆盖、量化比例）与规则分**完全相同** —— 都是确定性算的；
+    - 唯一差别：规则分只数规则层条目，深度分把 qc 之后最终清单里的**全部**条目都数进去。
+    - 因此 `depth <= rule` 是结构性成立的（深度分只会更低或相等），
+      差别就是"模型比规则多抓到的问题量"。
+
+    ## 为什么必须带 `delta` 与 `extra_findings`
+
+    只说"深度分 71"没有信息量。要能回答"这 7 分差在哪"，就必须给出：
+    - `delta`：`rule.overall - depth.overall`；
+    - `extra_findings`：最终清单里 `origin == "llm"` 的条目数（模型独有发现）；
+    - `extra_by_category`：按维度拆，让用户看到"模型在哪个维度上更敏感"。
+    """
+    depth = compute_scores(
+        final_findings,
+        parsed_resume,
+        parsed_jd,
+        raw_text,
+        semantic_covered=semantic_covered,
+        include_llm=True,
+    )
+    extra = [f for f in final_findings or [] if not is_rule_origin(f)]
+    extra_by_category: dict[str, int] = {}
+    for f in extra:
+        cat = str(f.get("category") or "unknown")
+        extra_by_category[cat] = extra_by_category.get(cat, 0) + 1
+
+    return {
+        "overall": depth["overall"],
+        "ats": depth["ats"],
+        "impact": depth["impact"],
+        "clarity": depth["clarity"],
+        "match": depth["match"],
+        "risk": depth["risk"],
+        # 与规则分的差值（>= 0；0 表示模型没抓到规则之外的新问题）
+        "delta": max(0, int(rule_scores.get("overall") or 0) - int(depth["overall"] or 0)),
+        # 模型独有的发现项（规则层没有的）
+        "extra_findings": len(extra),
+        "extra_by_category": extra_by_category,
+        # 口径说明：前端/导出直接用这段文字，避免两处各写一版解释
+        "explain": (
+            f"规则分 {rule_scores.get('overall')} 分按确定性规则计算，可跨次对比；"
+            f"深度分 {depth['overall']} 分把模型额外发现的 {len(extra)} 个问题也计入扣分。"
+            if extra
+            else f"规则分与深度分一致（{depth['overall']} 分）：模型没有发现规则之外的新问题。"
+        ),
+    }
+
+
+def compose_summary(
+    *,
+    scores: dict,
+    risk_level: str,
+    breakdown: dict,
+    top_finding: dict | None,
+    job_title: str = "",
+) -> str:
+    """确定性总结文本。
+
+    唯一硬约束：`综合得分 {N} 分` 里的 N 必须等于 `scores["overall"]` ——
+    `scripts/verify.py` 有一条断言专门守这一点（同一份报告里两个总分不许打架）。
+    """
+    parts = [
+        f"综合得分 {scores.get('overall', 0)} 分，与岗位「{job_title or '目标岗位'}」的匹配度处于中等水平，"
+        f"{summary_level_text(risk_level)}。"
+    ]
+    if top_finding:
+        parts.append(f"最需要优先处理的是「{top_finding.get('title')}」：{str(top_finding.get('issue') or '')[:70]}")
+    else:
+        parts.append("未发现明显硬伤，可从量化成果与关键词对齐两方面继续打磨。")
+    parts.append(
+        f"共 {breakdown.get('red', 0)} 项高风险、{breakdown.get('yellow', 0)} 项待优化，"
+        "按行动清单逐条修改后可再诊断一次对比分数变化。"
+    )
+    return "".join(parts)[:300]
 
 
 def _penalty(findings: list[dict], category: str, *, red: int, yellow: int, cap: int = 2) -> int:
@@ -897,9 +1378,53 @@ SEVERITY_ORDER = {"red": 0, "yellow": 1, "green": 2}
 
 
 def sort_findings(findings: list[dict]) -> list[dict]:
-    """red → yellow → green，同级按 category 固定顺序，保证前端展示稳定。"""
+    """red → yellow → green，同级按 category 固定顺序，保证前端展示稳定。
+
+    顺带做一次「合规过滤」：年龄、性别、婚育、户籍等与岗位能力无关的字段，
+    不允许作为问题项出现在报告里（规则层已不再产出；这里拦住 LLM 自由发挥的部分）。
+    用户口径：「年龄性别与岗位无关易引发合规争议，这并不是问题」。
+    """
+    kept = [f for f in findings if not _is_sensitive_finding(f)]
+    kept = _dedupe_keyword_findings(kept)
     category_order = {"ats": 0, "impact": 1, "risk": 2, "clarity": 3, "gap": 4}
     return sorted(
-        findings,
+        kept,
         key=lambda f: (SEVERITY_ORDER.get(f.get("severity", "yellow"), 1), category_order.get(f.get("category", ""), 9)),
     )
+
+
+def _finding_keyword(finding: dict) -> str:
+    """从标题里取「关键词」（中文引号内的第一段）。"""
+    match = re.search(r"「([^」]+)」", str(finding.get("title") or ""))
+    return match.group(1).strip().lower() if match else ""
+
+
+def _dedupe_keyword_findings(findings: list[dict]) -> list[dict]:
+    """同一关键词只保留一条问题项。
+
+    实测报告里出现过两次同一件事：
+      ATS   「JD 要求的关键词『Go』在简历中缺失」
+      差距   「岗位要求『Go』在简历中缺少对应证据」
+    前者已经足够说明问题，后者只是换个说法，属于重复噪音。
+    """
+    ats_keywords = {_finding_keyword(f) for f in findings if f.get("category") == "ats"}
+    ats_keywords.discard("")
+    if not ats_keywords:
+        return findings
+    out: list[dict] = []
+    for finding in findings:
+        if finding.get("category") == "gap":
+            kw = _finding_keyword(finding)
+            if kw and any(k in kw or kw in k for k in ats_keywords):
+                continue
+        out.append(finding)
+    return out
+
+
+def _is_sensitive_finding(finding: dict) -> bool:
+    """问题项是否在拿年龄/性别/婚育等与岗位无关的字段说事。"""
+    text = " ".join(
+        str(finding.get(k) or "")
+        for k in ("title", "issue", "original_text", "suggestion")
+    )
+    return bool(_SENSITIVE_FINDING_RE.search(text))

@@ -107,7 +107,7 @@ export function ReportView({ report, actions, banner }: ReportViewProps) {
             <RiskBadge level={report.risk_level} />
           </div>
         </div>
-        {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
+        {actions ? <div className="flex flex-wrap items-start gap-2">{actions}</div> : null}
       </header>
 
       {/* ---------------------------------------------------------------- */}
@@ -128,6 +128,27 @@ export function ReportView({ report, actions, banner }: ReportViewProps) {
             由规则引擎按客观比率计算，同一份简历重复诊断分数一致。
             Agent 只补依据，不参与打分。
           </p>
+          {report.depth_scores ? (
+            <div className="mt-4 border-t border-ink-200 pt-4">
+              <div className="flex items-baseline justify-between gap-2">
+                <p className="text-[10.5px] font-bold uppercase tracking-[0.12em] text-ink-500">
+                  深度分析分
+                </p>
+                <p className="tnum text-[28px] font-extrabold leading-none text-brand-600">
+                  {report.depth_scores.overall}
+                </p>
+              </div>
+              <p className="mt-2 text-[11px] leading-relaxed text-ink-600">
+                {report.depth_scores.explain}
+              </p>
+              {report.depth_scores.delta > 0 ? (
+                <p className="mt-1.5 text-[11px] font-semibold text-amber-700">
+                  比规则分低 {report.depth_scores.delta} 分，差异来自模型额外发现的{' '}
+                  {report.depth_scores.extra_findings} 个问题。
+                </p>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
         <div className="bg-white">

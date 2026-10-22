@@ -44,7 +44,11 @@ def persist_report(state: WorkflowState) -> str:
         report.clarity_score = scores.get("clarity")
         report.match_score = scores.get("match")
         report.risk_score = scores.get("risk")
-        report.risk_level = analyze.risk_level_from_score(int(scores.get("risk") or 0))
+        # 风险等级由 qc 定稿（analyze.risk_level_from_findings：吸收全维度红色），
+        # 这里**不再**从单项 risk 分重新派生 —— 否则「3 条红 + yellow」会被写回来。
+        report.risk_level = ctx.risk_level or analyze.risk_level_from_findings(
+            int(scores.get("risk") or 0), ctx.findings
+        )
         report.summary = ctx.summary
         report.report_url = None
         report.extra_json = {
@@ -55,6 +59,8 @@ def persist_report(state: WorkflowState) -> str:
             "qc": ctx.qc_report,
             # Agentic RAG：检索决策轨迹（fixed 模式下为空 dict，出参为 null）
             "agent_trace": state.get("agent_trace") or {},
+            # 双分制：深度分（含模型补充的发现项）。fixed 模式下为空 dict，出参为 null。
+            "depth_scores": ctx.depth_scores or {},
             "disclaimer": DISCLAIMER,
             "agent_outputs": {k: v for k, v in ctx.outputs.items() if k != "parse"},
         }

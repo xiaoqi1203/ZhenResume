@@ -10,7 +10,9 @@ checkpoint / 状态图 / 可视化能力在这里基本用不上，却会引入�
 - 每次执行都落一行 `workflow_steps`，input/output/tokens/cost/latency 全部可观测。
 
 两个关键设计决策：
-1. **QC 之后重算分数**：质检会剔除/降级发现项，若不重算，报告总分与展示的问题清单会自相矛盾。
+1. **QC 内部定稿**（详见 `agents/qc_agent.py::_finalize`）：质检会剔除/降级发现项，
+   分数、风险等级与摘要统一由 `analyze.finalize_report` 在 qc 之后算**一次**并写回 ctx；
+   本文件只负责落库，绝不再算第二遍（两处计算是历史缺陷的根因）。
 2. **input 只存摘要**：不把简历全文写进 workflow_steps，避免数据库膨胀与隐私外泄。
 """
 
@@ -63,8 +65,22 @@ async def run_analysis(task_id: str) -> str | None:
     if settings.workflow_engine == "langgraph":
         from .graph import run_graph
 
-        return await run_graph(task_id, mode="auto")
+        # 按任务选择分析模式：前端提交时可选 fixed（快）/ agentic（深度）。
+        # 老库没有 mode 列时取不到 → 回落到全局默认。
+        task_mode = _task_workflow_mode(task_id)
+        return await run_graph(task_id, mode="auto", workflow_mode=task_mode)
     return await run_workflow(task_id)
+
+
+def _task_workflow_mode(task_id: str) -> str | None:
+    """读任务的 fixed / agentic 选择；读不到就返回 None（用全局默认）。"""
+    try:
+        with session_scope() as db:
+            task = db.get(AnalysisTask, task_id)
+            mode = (getattr(task, "mode", None) or "").strip().lower()
+            return mode if mode in {"fixed", "agentic"} else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 async def run_workflow(task_id: str) -> str | None:
@@ -93,6 +109,10 @@ async def run_workflow(task_id: str) -> str | None:
             parsed_resume=_safe_resume(resume.parsed_json),
             parsed_jd=_safe_jd(jd.parsed_json),
             prompt_overrides=prompts.load_overrides(db),
+            # legacy 手写状态机只跑 fixed 线（agentic 只在 LangGraph 图里）。
+            # 显式写明而不是靠默认值：双分制的开关判据是 workflow_mode，
+            # 靠隐式默认值会在将来接 agentic 时静默不出深度分。
+            workflow_mode="fixed",
         )
 
         # RAG 检索：一次检索，全链路复用，避免每个 Agent 重复打库
@@ -138,12 +158,9 @@ async def run_workflow(task_id: str) -> str | None:
             db.flush()
 
             if agent.name == "qc":
-                # QC 会改动 findings，必须在它之后再定稿分数，保证总分与问题清单一致。
-                # 注意用 compute_scores_deterministic：分数只由规则层基线决定，
-                # 与 LLM 每次的增删无关 —— 否则同一份简历两次诊断分数会不同（实测已发生）。
-                ctx.scores = analyze.compute_scores_deterministic(
-                    ctx.parsed_resume, ctx.parsed_jd, ctx.role_family, ctx.resume_text, ctx.jd_text
-                )
+                # QC 已经在内部定稿了分数 / 风险等级 / 摘要（`analyze.finalize_report`），
+                # 这里只落库。**不要**再算一遍 —— 两处计算正是「85 分 + 综合得分 84 分」
+                # 与「3 条红 + yellow」这两个自相矛盾的根因。
                 report = _persist_report(db, task, ctx)
                 report_id = report.id
 
@@ -194,7 +211,8 @@ def _persist_report(db: Session, task: AnalysisTask, ctx: AgentContext) -> Analy
         clarity_score=scores.get("clarity"),
         match_score=scores.get("match"),
         risk_score=scores.get("risk"),
-        risk_level=analyze.risk_level_from_score(int(scores.get("risk") or 0)),
+        # 风险等级取 qc 的定稿结论（吸收全维度红色）；没有时按最终清单派生。
+        risk_level=ctx.risk_level or analyze.risk_level_from_findings(int(scores.get("risk") or 0), ctx.findings),
         summary=ctx.summary,
         report_url=None,
         extra_json={
