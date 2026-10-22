@@ -49,7 +49,7 @@ pnpm dev     # http://127.0.0.1:3000
 前端读取 `NEXT_PUBLIC_API_BASE`（默认 `http://127.0.0.1:8000`），可用 `.env.local` 覆盖。
 
 **手上还没有简历？** 直接打开 <http://127.0.0.1:3000/editor>，
-挑一套模板（社招 / 应届 / 转行 / 技术岗）按提示填，右侧实时预览，
+挑一套版式（青简细线 / 深蓝序章 / 象牙书页 / 钴蓝横帆）按提示填，右侧实时预览，
 可导出 Markdown / DOCX / PDF，也能一键发起诊断 —— 全程不需要先准备文件。
 详见 [五、简历模板与编辑器](#五简历模板与编辑器v11-新增)。
 
@@ -136,7 +136,7 @@ ZhenResume/
 │   │   │   ├── rag.py            切片 / 入库 / 混合检索
 │   │   │   ├── prompts.py        Prompt 注册表（可被后台覆盖）
 │   │   │   ├── plans.py          套餐常量
-│   │   │   ├── resume_templates.py 4 套内置简历模板（区块骨架 + 写作提示 + 完整范例）
+│   │   │   ├── resume_templates.py 模板数据（4 套版式 + 4 套旧写作模板兼容）
 │   │   │   ├── resume_render.py  ★ 纯文本 / Markdown / DOCX / PDF 四种渲染 + 双向转换
 │   │   │   ├── cost.py           token 估算与成本核算
 │   │   │   ├── report_render.py  诊断报告 Markdown 导出
@@ -150,7 +150,8 @@ ZhenResume/
 │       ├── make_sample_docs.py   由 .txt 样本生成 DOCX / PDF 样本（保证二进制样本可复现）
 │       ├── inspect.py            离线跑一份简历并打印完整报告（人工评估质量用）
 │       ├── demo_improve_loop.py  ★ 演示「草稿版 → 改进版」分数对比（验证二次诊断卖点）
-│       └── verify.py             ★ 端到端契约验证（173 项）
+│       ├── verify.py             ★ 端到端契约验证（约 174–180 项，随环境浮动）
+│       └── check_report_consistency.py  ★ 报告内部一致性（摘要总分 / 风险等级 / 证据 span）
 └── frontend/                     Next.js 14 App Router + TypeScript + Tailwind
     ├── Dockerfile                多阶段构建，运行层只带 .next/standalone 产物
     └── .dockerignore             挡住 node_modules / .next
@@ -208,8 +209,8 @@ GET /api/v1/tasks/{id}     轮询进度（8 步状态 + 耗时）
 GET /api/v1/reports/{id}   结构化报告
 ```
 
-**一个容易忽略的设计决策**：质检会剔除或降级发现项，所以引擎在 `qc` 之后**重算了一次分数**。
-否则报告里的总分与展示的问题清单会自相矛盾。
+**一个容易忽略的设计决策**：质检会剔除或降级发现项，所以定稿必须在 `qc` **之后**做。
+但"在 qc 之后重算一次"这句话本身埋过一个坑 —— 见下表的最后四条：**报告内部的数字必须是同一次计算的结果**。
 
 ### 验证过程中发现并修复的真实缺陷
 
@@ -229,6 +230,12 @@ GET /api/v1/reports/{id}   结构化报告
 | 用户已在简历里说明空窗期，报告仍要求「补一句说明」 | 让用户做已经做过的事，是最伤信任的一类建议（由 `demo_improve_loop` 发现） | 检测到空窗期说明时转为绿色正面条目「已主动说明，处理得当」，并附上那句原文作证据 |
 | 高质量简历只出 2 条建议，达不到「≥5 条」的验收标准 | 硬凑 5 个问题等于编造问题 | 不足时补**正面发现项**（green，附原文证据 + 面试怎么用），见第五节 |
 | 用 `<a href download>` 下载简历 / CSV | 浏览器原生导航**不带 `X-Device-Id`**，请求落到 anonymous 用户，导出直接 404（静态构建检查发现不了，只在真实浏览器里出现） | 三处下载统一改为 `fetch` + blob，并在 `api.ts` 里收口 device-id 逻辑；服务端补 `Access-Control-Expose-Headers: Content-Disposition`；契约 §0.1 写明这条约束 |
+| **摘要里的总分与实际总分来自两次不同计算**（`report_agent` 用 `compute_scores(findings)`、落库用 `compute_scores_deterministic`） | 报告页同时出现 `overall=85` 和「综合得分 **84** 分」（`sample_resume_2_medium` 必现），核心数字自相矛盾 | 新增**唯一定稿入口** `analyze.finalize_report()`：分数 / risk_level / 摘要数字一次算完；`qc` 用它按**最终清单**定稿，两条引擎只落库不再重算。新增断言 `scripts.check_report_consistency` 守"摘要总分 == overall" |
+| 风险等级只看 `category=="risk"` 的条目 | 「3 项高风险」旁边挂着黄色风险徽章；空简历 2 条 impact 红却 `risk=100/green` | `analyze.risk_level_from_findings()`：在契约派生的基础上吸收**全维度**红色（≥3 条红 → red；有红不得为 green）。HR 排序表同口径 |
+| 空简历 / 扫描件 OCR 失败照样产出报告 | 一份没抽取到文本的简历拿到「综合得分 55 分、风险较低」（10 个边界输入 8 个 green）—— 给假结论比报错更伤信任 | `tasks.create_task` 增加可分析性闸门（`analyze_guard`）：文本过短或解析不出任何结构 → `400 RESUME_UNANALYZABLE` 并给出换格式的建议；HR 批量的失败条目也带上原因 |
+| 证据 `span` 在字形折叠路径上按引文原长算 end | `raw_text[285:292]` 切出 `"Spring "` 而引文是 `"Spring Cloud"`，前端却判「已定位」 | `locate_quote` 立下不变式：返回区间必须满足 `text[start:end].strip() == quote`，做不到就返回 None（宁缺勿错）；折叠/去空格两级只认完整命中；`qc` 再按 source 严格复核红色条目 |
+| 分享接口实现是 POST，契约写 GET；分享路由改 `/s/{token}` 后 verify 仍查 `/share/` | 照契约对接的客户端拿到 405；`verify` 的分享断言长期误报 | 路由改为 `GET|POST /reports/{id}/share`（生成链接是幂等读操作）；断言改为校验 `/s/{token}` 与有效期字段 |
+| 模板示例缺 `avatar` 键，而 `EditorBasics` 有默认值 | 「editor_content 原样回显」永远不成立（契约 §2.3 要求原样回显） | 4 套模板的 `example_content.basics` 显式补 `avatar: ""` |
 
 ---
 
@@ -236,18 +243,32 @@ GET /api/v1/reports/{id}   结构化报告
 
 求职者可以完全不打开 Word，直接在应用里写简历。
 
-- **4 套内置模板**（`services/resume_templates.py`）：通用社招、应届生 / 校招、转行求职、技术岗强化。
-  每套都带区块骨架、每一栏的写作提示与示例句，以及一份可直接一键载入的完整范例。
-  提示内容是从知识库提炼的同一套标准 —— 所以**编辑器里看到的建议，与诊断报告给出的建议不会自相矛盾**。
-- **结构化编辑器**（`/editor`）：左侧按区块填写（个人信息 / 个人优势 / 工作 / 项目 / 教育 / 技能 / 证书 / 荣誉 / 自定义区块），
-  右侧实时预览；支持条目增删、草稿自动保存、载入模板示例。
-- **直接在编辑器里上传文档导入**：把现有简历（PDF / DOCX / PNG / JPG / TXT）拖进卡片或点击选择，
-  解析完自动填入表单，**不必先绕到首页上传一次**。导入走的是既有接口 `POST /resumes`（契约 §2.1），
+- **入口已恢复到主导航**：顶部「编辑简历」→ `/editor`（开始页：先决定模板与内容起点，两个都可以跳过），
+  决策后进入真正的编辑器 `/editor/write`；首页 hero、账号中心「我的简历」、报告页也都提供了入口。
+- **模板画廊（第一批 4 套版式）**：青简细线、深蓝序章、象牙书页、钴蓝横帆。
+  模板库是 4 列卡片网格，带真实 A4 缩略图（用同一份 React 版式组件缩放渲染，不是截图），
+  支持「简约 / 商务 / 清新 / 个性」风格、「社招 / 实习 / 校招」场景、「单栏 / 双栏」布局筛选，
+  点卡片可看版式介绍、写作规则与区块结构。旧 4 套写作模板仍保留在 `TEMPLATE_MAP` 里，
+  已保存简历按旧 `template_code` 打开时仍能取到对应设计，但不再出现在画廊列表。
+- **版式 PDF 与 ATS DOCX 分开**：右侧预览支持 4 种真实版式；「导出版式 PDF（打印 / 另存为）」
+  走浏览器打印，输出与网页预览 1:1 的 A4 PDF（页首色块、双线、衬线、背景色都保留）。
+  「保存并导出 ATS 单栏 PDF / DOCX」仍是纯单栏文本版式，专门给招聘系统解析用。
+  这是刻意取舍：ATS 最怕表格、文本框、分栏，版式只服务于人看的 PDF。
+- **结构化编辑器**（`/editor/write`）：左侧按区块填写（个人信息 / 个人优势 / 工作 / 项目 / 教育 / 技能 / 证书 / 荣誉 / 自定义区块），
+  右侧实时预览；支持条目增删、草稿自动保存、载入模板示例。顶部写作设置条可随时换模板 / 移除模板 / 改标题。
+- **同一份简历可反复修改，不再重复新建**：编辑器保存时会先看有没有已保存的 `resume_id` ——
+  有就 `PUT /api/v1/resumes/{id}` 原地更新，没有才创建。`savedResumeId` 会跟着草稿一起存在本机，
+  刷新页面不会再每次导出一份、改一次多一份。模板选择（`template_code`）也会随简历落库，重新打开时自动恢复。
+- **账号中心「我的简历」**：按登录账号列出已保存/上传的简历，可继续编辑或删除；删除会级联清掉它的诊断任务与报告。
+  匿名期间在编辑器里建的简历，在同一个浏览器登录后会由后端自动迁移到账号名下（见 §十一「账号与管理员」）。
+- **在开始页上传文档导入**：在 `/editor` 选择「上传文档」，把现有简历（PDF / DOCX / PNG / JPG / TXT）拖进上传区或点击选择，
+  解析完自动进入编辑器并填入表单，**不必先绕到首页上传一次**。导入走的是既有接口 `POST /resumes`（契约 §2.1），
   因此没有新增任何接口。导入后会清空"已保存版本"标记 —— 上传件没有编辑器原文，导出只能以解析结果为源（有损）；
   清空后第一次导出或诊断会另存为一份带完整结构化内容的可编辑版本。
-  也可以用「载入已上传简历」挑回之前上传或保存过的简历。
+  也可以用「我的简历」挑回之前上传或保存过的简历；本机草稿会在开始页显式给出「继续编辑草稿」入口，不会被静默覆盖。
 - **三格式导出**：Markdown（粘贴到网申表单）、DOCX（投递并微调）、PDF（由 DOCX 转出，版式与 DOCX 完全一致）。
   DOCX 刻意保持单栏纯段落 —— 不用表格、文本框、分栏，因为那正是 ATS 解析失败的头号原因。
+  版式更丰富的 PDF 走浏览器打印分支，两者同名但用途不同（见上一条）。
 - **与诊断闭环打通**：编辑器里一键「用这份简历发起诊断」（**不走文件上传**）；
   报告页的「修改后重新诊断」会跳回编辑器并带回原内容，改完再测即可对比分数变化。
 
@@ -308,7 +329,8 @@ live 调用 DeepSeek
 
 **MVP 明确没做的**（诚实标注，不是遗漏）：
 
-1. **没有登录与真实鉴权**：用 `X-Device-Id` 做匿名隔离，可被伪造。
+1. **登录体系已上线，但默认仍保留匿名设备通道**：`AUTH_REQUIRED=false` 时可用 `X-Device-Id` 匿名访问，可被伪造；
+   生产环境应打开 `AUTH_REQUIRED=true`，并配置 `AUTH_SECRET`、关闭 `SMS_DEV_MODE`。
 2. **支付是 Mock**：`pay_url` 指向假地址，回调不验签。接真实渠道时需补签名校验与对账。
 3. **HR 批量是串行执行**：100 份简历会跑较久；且不校验 HR 套餐配额（配额闸门只在单份任务上）。
 4. **图片简历 OCR 依赖本机 tesseract**：未安装时降级为"请上传 PDF/DOCX"，不会崩溃但也没有结果。
@@ -350,7 +372,8 @@ live 调用 DeepSeek
 ```powershell
 # 常用命令
 .\.venv\Scripts\python.exe -m scripts.seed_knowledge --force   # 重建知识库
-.\.venv\Scripts\python.exe -m scripts.verify                   # 端到端契约验证（177 项；未配置 PDF 时为 174）
+.\.venv\Scripts\python.exe -m scripts.verify                   # 端到端契约验证（未通过项应为空；总数随环境浮动约 174–180）
+.\.venv\Scripts\python.exe -m scripts.check_report_consistency # 报告内部一致性（摘要总分/风险等级/证据 span/空简历闸门）
 .\.venv\Scripts\python.exe -m scripts.demo_improve_loop        # 草稿版 → 改进版的分数对比
 .\.venv\Scripts\python.exe -m scripts.inspect --all            # 离线跑全部样本并打印报告
 .\.venv\Scripts\python.exe -m scripts.inspect --resume samples/sample_resume_1_weak.txt --category risk
@@ -450,6 +473,36 @@ $pnpm  = "$env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\pn
 & $node $pnpm build
 ```
 
+### 账号与管理员
+
+账号体系（`/api/v1/auth/*`）支持邮箱密码、手机验证码登录，token 存 `localStorage`。
+`/api/v1/admin/*`（成本看板、线上 Prompt、全部反馈）**只允许 `users.role == "admin"`**，
+匿名设备和普通登录都会返回 `403 ADMIN_REQUIRED`；前端 `/admin` 也会显示「无权访问」。
+
+授权管理员（账号必须先登录/注册过一次）：
+
+```powershell
+# 本机 PyCharm / 命令行后端（SQLite）
+cd E:\ZhenResume\backend
+.\.venv\Scripts\python.exe -m scripts.grant_admin --email you@example.com
+# Docker API（PostgreSQL）
+docker exec zhenresume-api python -m scripts.grant_admin --email you@example.com
+
+# 查看/撤销
+docker exec zhenresume-api python -m scripts.grant_admin --list
+docker exec zhenresume-api python -m scripts.grant_admin --email you@example.com --revoke
+```
+
+也可以在 `backend/.env` 配 `ADMIN_EMAILS=` / `ADMIN_PHONES=`（逗号分隔），命中的账号在登录/注册时自动提升。
+⚠️ 当前注册流程**没有验证邮箱归属**，公网部署优先用手机号白名单或上面的脚本；同时记得配置 `AUTH_SECRET`、
+关闭 `SMS_DEV_MODE`，否则后台鉴权修好了，短信验证码本身仍是公开的。
+
+### 匿名数据迁移（登录后不丢简历）
+
+编辑器允许未登录直接使用。登录/注册时前端会带 `X-Device-Id`，后端把该设备匿名用户名下的
+简历 / JD / 分析任务 / HR 批次 / 反馈迁移到账号（`services/claim.py`，幂等；不动支付数据）。
+因此「匿名改了一半 → 登录 → 简历消失」这个断点已经补上。
+
 ### 排错：uvicorn 报 `ImportError: cannot import name 'Self' from 'typing'`
 
 **症状**：`python -m uvicorn` 启动时在 `uvicorn/protocols/websockets/...` 处抛
@@ -477,7 +530,7 @@ Get-Content .\.venv\pyvenv.cfg
 Remove-Item .\.venv -Recurse -Force
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-& .\.venv\Scripts\python.exe -m scripts.verify     # 期望 177/177（未配置 PDF 转换时 174/174，两者都算全部通过）
+& .\.venv\Scripts\python.exe -m scripts.verify     # 以「未通过项为空」为准；总数随环境浮动约 174–180
 ```
 
 **另一个可选加固**：本项目没有任何 WebSocket 端点，所以即使 `websockets` 包有问题，

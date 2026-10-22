@@ -12,6 +12,16 @@ export interface AgentTracePanelProps {
   className?: string;
 }
 
+/**
+ * `verify.rejected_not_retrieved` 是后端新加的统计项（引用 provenance 校验：
+ * 该 chunk 是否**本次检索真的返回过**）。`lib/types.ts` 里的 `AgentTrace.verify`
+ * 尚未声明该字段（不在本次允许改动的文件范围内），这里用局部类型窄化读取，
+ * 缺失时回落 0，保证前端在旧报告（没有该字段）上也不会崩。
+ */
+type VerifyStatsWithProvenance = NonNullable<AgentTrace['verify']> & {
+  rejected_not_retrieved?: number;
+};
+
 function statusLabel(trace: AgentTrace): { text: string; tone: string } {
   if (trace.status === 'done') return { text: '已完成', tone: 'text-green-700 border-green-600' };
   if (trace.status === 'truncated') return { text: '预算耗尽后收尾', tone: 'text-amber-700 border-amber-500' };
@@ -94,6 +104,16 @@ export function AgentTracePanel({ trace, className }: AgentTracePanelProps) {
             服务端校验：chunk 不存在 {trace.verify.rejected_missing_chunk ?? 0} 条｜
             quote 无法逐字定位 {trace.verify.rejected_quote_not_found ?? 0} 条｜
             重复 {trace.verify.rejected_duplicate ?? 0} 条
+            {((trace.verify as VerifyStatsWithProvenance).rejected_not_retrieved ?? 0) > 0 ? (
+              <>
+                ｜
+                <span className="text-amber-600">
+                  未检索到{' '}
+                  {(trace.verify as VerifyStatsWithProvenance).rejected_not_retrieved ?? 0} 条（
+                  chunk 不在本次检索结果中，已丢弃）
+                </span>
+              </>
+            ) : null}
           </p>
         ) : null}
 

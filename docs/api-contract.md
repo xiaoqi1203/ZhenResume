@@ -25,8 +25,11 @@
   不能用 `<a href download>` 或 `window.open`：浏览器的原生导航不会带自定义请求头，
   请求会落到 `anonymous` 用户上，结果就是 404。
 - 拿到 `Response` 后自行生成 blob URL 触发下载，文件名从 `Content-Disposition` 解析。
-  服务端已用 `Access-Control-Expose-Headers: Content-Disposition` 暴露该响应头，
-  否则浏览器端的 JS 读不到它。
+  服务端已用 `Access-Control-Expose-Headers: Content-Disposition, X-Page-Count, X-Fit-Scale`
+  暴露这些响应头，否则浏览器端的 JS 读不到它们（页数/缩放提示会静默降级）。
+- **登录态**：请求头 `Authorization: Bearer <jwt>` 优先于 `X-Device-Id`。登录/注册/验证码登录成功时，
+  后端会把同一 `X-Device-Id` 匿名用户名下的简历 / JD / 分析任务 / HR 批次 / 反馈迁移到账号
+  （幂等；不迁移支付数据），因此匿名期间创建的数据在登录后仍然可见。
 - 例外：`GET /reports/{report_id}` 与 `GET /reports/{report_id}/markdown` 允许匿名只读，以支持分享链接（§5.2）。
 
 ---
@@ -76,6 +79,7 @@
   "parsed": { "…见 §7.1 ParsedResume…" },
   "source": "upload",
   "editor_content": null,
+  "template_code": null,
   "created_at": "2026-02-11T08:00:00Z"
 }
 ```
@@ -83,12 +87,14 @@
 - `source` ∈ `upload` | `editor`，决定报告页「修改后重新诊断」跳回上传页还是编辑器。
 - `editor_content`：编辑器创建的简历才有值（结构见 §2.5），上传的简历为 `null`。
   编辑器用它回填表单，因此**同一份简历可以被反复打开修改**。
+- `template_code`（编辑器简历才有值）：创建时选择的模板 code；重新打开编辑器时用它恢复模板提示。
+  上传的简历恒为 `null`。
 
 ### 2.2 列表 / 详情 / 删除
 
 - `GET /api/v1/resumes?limit=&offset=` → `{ "items": [ResumeSummary], "total": n }`
-  - `ResumeSummary = { resume_id, title, created_at, parsed_name, parsed_title, source }`
-  - `source` ∈ `upload` | `editor`，编辑器页的「载入已上传简历」列表据此区分来源。
+  - `ResumeSummary = { resume_id, title, created_at, parsed_name, parsed_title, source, template_code }`
+  - `source` ∈ `upload` | `editor`，编辑器页的「载入已上传简历」与账号中心「我的简历」据此区分来源。
 - `GET /api/v1/resumes/{resume_id}` → 同 2.1 响应结构
 - `DELETE /api/v1/resumes/{resume_id}` → `204`（同时级联删除其分析任务与报告；隐私要求，见 aaa.md §4）
 
@@ -108,6 +114,26 @@
 - 后端会把结构化内容渲染成纯文本存入 `raw_text`，因此**诊断流水线完全复用**，与上传文件走同一条链路。
 - 响应 `201`：与 §2.1 结构相同，另加 `"source": "editor"` 与回显的 `"editor_content"`。
 
+### 2.3.1 更新编辑器简历（原地更新，不再重复新建）
+
+`PUT /api/v1/resumes/{resume_id}`
+
+```json
+{
+  "title": "张三-后端开发（更新版）",
+  "template_code": "general_experienced",
+  "content": { "…见 §2.5 EditorContent…" }
+}
+```
+
+- 三个字段都可选，但**至少提供一个**；只传 `title` 即重命名。
+- `content` 提供时必须是“有意义的内容”（`EditorContent.is_meaningful()`），否则 `400 VALIDATION_ERROR`；
+  后端重算 `raw_text` / `parsed`，同步更新 `size_bytes`，并保持 `source="editor"`。
+- `template_code` 显式传 `null` 表示清空模板；**不传则保持原值**（只更新内容时模板不会丢）。
+- 响应 `200`：同 §2.1 结构（含 `template_code` 与 `editor_content`）。
+- 非本人简历 → `404 RESUME_NOT_FOUND`（不区分“不存在”与“不是你的”）。
+- 前端保存策略：有 `resume_id` 走 PUT，没有才走 §2.3 POST；`resume_id` 随草稿持久化，避免“改一次多一份”。
+
 ### 2.4 简历导出
 
 `GET /api/v1/resumes/{resume_id}/export/{format}`，`format` ∈ `markdown` | `docx` | `pdf`
@@ -116,6 +142,8 @@
 - 对应 `Content-Type`：`text/markdown; charset=utf-8` / `application/vnd.openxmlformats-officedocument.wordprocessingml.document` / `application/pdf`。
 - 简历不存在 → `404 RESUME_NOT_FOUND`。
 - `format=pdf` 且服务端未配置 LibreOffice → `503 PDF_UNAVAILABLE`，前端应引导改用 DOCX 或浏览器打印。
+- 仅 `format=pdf` 支持可选查询参数 `fit=one`：逐档缩小字号与间距压到 1 页 A4，
+  实际缩放比例与页数通过响应头 `X-Fit-Scale` / `X-Page-Count` 返回（任何格式都会带 `X-Page-Count`，PDF 才有意义）。
 - 若简历既无编辑器原文、解析结果也为空（无法结构化）→ `400 VALIDATION_ERROR`，提示用户载入编辑器补全。
 - 上传的简历同样可导出，但以**解析结果**为渲染来源：**解析没识别到的内容不会出现在导出文件里**。
   要获得无损往返（写进去什么、导出来就是什么），请用编辑器创建简历。
@@ -246,6 +274,13 @@
 - `report_id` 在 `status=done` 时非空
 - `failed` 时 `error` 为非空字符串
 
+**v1.1 新增（向前兼容）**：响应还包含 `mode`（`fixed`|`agentic`）、`created_at`、`completed_at` 与 `usage`：
+
+```json
+{ "usage": { "latency_ms": 47500, "tokens": 13000, "cost": 0.06,
+             "steps_cost": 0.06, "evidence_cost": 0.0, "evidence_tokens": 0, "evidence_latency_ms": 0 } }
+```
+
 ### 4.3 任务列表
 
 `GET /api/v1/tasks?limit=&offset=` → `{ "items": [TaskSummary], "total": n }`
@@ -369,7 +404,21 @@ while (true) {
 ### 5.2 导出与分享
 
 - `GET /api/v1/reports/{report_id}/markdown` → `text/markdown`，下载文件名 `zhenresume-report-{report_id}.md`
-- `GET /api/v1/reports/{report_id}/share` → `{ "share_url": "http://127.0.0.1:3000/share/{report_id}", "expires_at": null }`
+- `GET /api/v1/reports/{report_id}/share`（也接受 `POST`）→
+
+```json
+{ "share_url": "http://127.0.0.1:3000/s/{token}",
+  "expires_at": "2026-10-27T02:34:01.879291+00:00",
+  "include_raw": false,
+  "ttl_days": 7 }
+```
+
+- `report_id` → `404 REPORT_NOT_FOUND`（与其它读接口一致，不区分"不存在"与"不是你的"）。
+- `share_url` 是**分享令牌**而不是 `report_id`：`{token}` 是 32 字符不可猜测串，库里只存它的 sha256；
+  默认 7 天有效、可撤销（`DELETE /reports/{report_id}/share` → `204`）。
+- `include_raw=false` 时公开页（`GET /s/{token}` 对应前端路由 `/s/[token]`）**不返回**简历原文与改写句；
+  联系方式（手机号 / 邮箱）在任何情况下都会打码。
+- `POST` 保留为兼容形式（老前端在用）；新客户端按 `GET` 调用即可。
 
 ---
 
@@ -412,6 +461,11 @@ MVP 阶段 `pay_url` 为 Mock 支付页；`provider` ∈ `stripe` | `wechat` | `
 `scope` ∈ `role` | `industry` | `resume_template` | `compliance`。
 
 ### 6.3 管理后台
+
+> **鉴权**：本节 4 个端点都要求 `users.role == "admin"`（`api/deps.py::require_admin`），
+> 否则返回 `403 {"detail":{"code":"ADMIN_REQUIRED","message":"需要管理员权限"}}`。
+> 匿名设备通道（`X-Device-Id`）同样会被拒绝。前端 `/admin` 只做体验层的角色判断，
+> 真正的权限边界在后端；管理员可由 `python -m scripts.grant_admin --email <邮箱>` 授予。
 
 - `GET /api/v1/admin/metrics` →
 
@@ -484,27 +538,43 @@ HR 可以在第 5 个人出结果时就开始筛，不必等整批跑完。
 
 ```json
 {
-  "code": "general_experienced",
-  "name": "通用社招模板",
-  "description": "适合有 2 年以上正式工作经验的社招投递，突出成果与量化",
+  "code": "celadon_line",
+  "name": "青简细线",
+  "description": "细线单栏版式：技能前置、留白克制，适合社招研发 / 算法 / 测试 / 运维投递",
   "target": "experienced",
-  "role_family": "general",
-  "section_count": 7
+  "role_family": "tech",
+  "section_count": 8,
+  "style": "minimal",
+  "layout": "single",
+  "design": "celadon",
+  "accent": "#5D7F6B",
+  "tags": ["社招", "技术", "单栏"]
 }
 ```
 
 `target` ∈ `campus`（应届） | `experienced`（社招） | `transition`（转行）。
+`style` ∈ `minimal` | `business` | `fresh` | `creative`；`layout` ∈ `single` | `sidebar`；
+`design` 是前端版式组件标识（第一批：`celadon` / `navy` / `ivory` / `cobalt`）；
+`tags` 是画廊筛选用的中文标签（社招 / 实习 / 校招 / 单栏 / 双栏等）。
+
+**列表只返回 `visible=true` 的模板**（当前 4 套版式）。旧写作模板（`general_experienced` 等）
+不再出现在列表里，但 `GET /templates/{code}` 仍可查到，保证已保存简历按旧 `template_code` 打开不 404。
 
 `GET /api/v1/templates/{code}` → TemplateDetail
 
 ```json
 {
-  "code": "general_experienced",
-  "name": "通用社招模板",
+  "code": "celadon_line",
+  "name": "青简细线",
   "description": "…",
   "target": "experienced",
-  "role_family": "general",
-  "section_count": 7,
+  "role_family": "tech",
+  "section_count": 8,
+  "style": "minimal",
+  "layout": "single",
+  "design": "celadon",
+  "accent": "#5D7F6B",
+  "tags": ["社招", "技术", "单栏"],
   "intro": "这份模板的适用前提与使用顺序说明",
   "writing_rules": ["每条要点用强动词开头，结构为「动作 + 对象 + 量化结果」", "…"],
   "sections": [
@@ -571,6 +641,7 @@ HR 可以在第 5 个人出结果时就开始筛，不必等整批跑完。
 | code | HTTP | 含义 |
 |---|---|---|
 | `VALIDATION_ERROR` | 400 | 入参不合法 |
+| `RESUME_UNANALYZABLE` | 400 | 简历没有可分析的文本或结构（扫描件 OCR 失败 / 空文件 / 多栏排版解析失败）。**此时不产出报告** —— 给一份"中等水平、风险较低"的假结论比报错更伤信任 |
 | `UNSUPPORTED_FILE_TYPE` | 415 | 简历文件类型不支持 |
 | `FILE_TOO_LARGE` | 413 | 超过 10MB |
 | `RESUME_NOT_FOUND` | 404 | 简历不存在 |
@@ -582,6 +653,7 @@ HR 可以在第 5 个人出结果时就开始筛，不必等整批跑完。
 | `TEMPLATE_NOT_FOUND` | 404 | 简历模板不存在 |
 | `PDF_UNAVAILABLE` | 503 | 服务端未配置 PDF 转换组件（LibreOffice） |
 | `QUOTA_EXCEEDED` | 402 | 免费次数已用完 |
+| `ADMIN_REQUIRED` | 403 | 已登录但不是管理员（访问 `/api/v1/admin/*`） |
 | `LLM_ERROR` | 502 | LLM 调用失败且降级不可用 |
 | `INTERNAL_ERROR` | 500 | 未预期错误 |
 
@@ -592,19 +664,21 @@ HR 可以在第 5 个人出结果时就开始筛，不必等整批跑完。
 | 页面 | 路由 | 使用接口 |
 |---|---|---|
 | 首页 | `/` | 2.1 上传简历、3.1 创建 JD、4.1 创建任务、6.1 套餐 |
-| 简历编辑器 | `/editor?resumeId=&template=` | 6.6 模板、2.3 编辑器创建简历、2.4 导出、3.1 创建 JD、4.1 创建任务、2.2 载入已上传简历 |
+| 简历编辑开始页 | `/editor`（`?template=` 预选模板；`?resumeId=` 服务端重定向到编辑器） | 6.6 模板、2.2 我的简历列表、2.1 上传（导入现有简历） |
+| 简历编辑器 | `/editor/write?start=blank\|draft\|resume&resumeId=&template=` | 6.6 模板、2.3 编辑器创建简历、2.3.1 更新、2.4 导出、3.1 创建 JD、4.1 创建任务、2.2 载入/删除已保存简历 |
 | 进度页 | `/analyze/[taskId]` | 4.2 轮询 |
 | 报告页 | `/report/[reportId]` | 5.1 获取报告、5.2 markdown 导出 |
-| 分享页 | `/share/[reportId]` | 5.1（只读，隐藏操作区） |
+| 账号中心 | `/user` | 1.x 账号接口、2.2 我的简历列表/删除 |
+| 分享页 | `/s/[token]` | `GET /api/v1/shares/{token}`（只读，隐藏操作区；不传 `X-Device-Id`） |
 | HR 批量 | `/hr` | 3.1、2.2、6.5 |
 | 管理后台 | `/admin` | 6.3 |
 | 定价 | `/pricing` | 6.1、6.1 下单 |
 
 **闭环约定**：报告页的「修改后重新诊断」行为由报告的 `resume_source` 决定 ——
-`editor` 时跳 `/editor?resumeId={resume_id}` 并回填原内容；`upload` 时跳首页重新上传。
+`editor` 时跳 `/editor/write?start=resume&resumeId={resume_id}` 并回填原内容；`upload` 时跳首页重新上传。
 编辑器内的「发起诊断」走 §2.3 创建简历 → §3.1 创建 JD → §4.1 创建任务，成功后跳 `/analyze/{task_id}`。
 
-**编辑器内的文档导入**复用 §2.1 的文件上传（不新增接口）：上传拿回 `parsed` 后，
-用编辑器侧的映射函数填入表单。注意此时应**丢弃该上传件的 `resume_id`** ——
+**开始页的文档导入**复用 §2.1 的文件上传（不新增接口）：`/editor` 上传拿回 `parsed` 后，
+用编辑器侧的映射函数填入表单并进入 `/editor/write`。注意此时应**丢弃该上传件的 `resume_id`** ——
 上传件没有 `editor_content`，导出会退化为「以解析结果为源」的有损渲染；
 置空后，用户下一次导出或发起诊断时会由 §2.3 另存为一份带完整结构化内容的可编辑版本。
