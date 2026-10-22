@@ -121,6 +121,9 @@ export function normalizeEditorContent(input: unknown): EditorContent {
       email: asString(basics.email),
       city: asString(basics.city),
       links: asStringArray(basics.links),
+      // 头像是 EditorContent 的一部分：归一化时丢掉会导致「换过头像 → 保存/重新打开后消失」。
+      // 它不参与诊断，但导出 DOCX/PDF 时会嵌入，属于必须无损往返的字段。
+      avatar: asString(basics.avatar),
     },
     summary: asString(source.summary),
     work,
@@ -136,8 +139,8 @@ export function normalizeEditorContent(input: unknown): EditorContent {
 /**
  * 把 ParsedResume（§7.1）映射成 EditorContent（§2.5）。
  *
- * ParsedResume 里没有的字段（`summary` / `awards` / `custom_sections` /
- * `basics.target_title`）保持为空，由用户自行补充。
+ * ParsedResume 里没有的字段（`summary` / `awards` / `custom_sections`）保持为空，
+ * 由用户自行补充；`basics.target_title` 若解析出了就带过来（老数据可能缺这个键，按空串处理）。
  */
 export function editorContentFromParsed(parsed: ParsedResume | null | undefined): EditorContent {
   const base = normalizeEditorContent(undefined);
@@ -148,7 +151,7 @@ export function editorContentFromParsed(parsed: ParsedResume | null | undefined)
   return {
     basics: {
       name: asString(basics.name),
-      target_title: '',
+      target_title: asString(basics.target_title),
       phone: asString(basics.phone),
       email: asString(basics.email),
       city: asString(basics.city),

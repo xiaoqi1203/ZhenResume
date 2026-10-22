@@ -1,0 +1,923 @@
+/*
+ * 登录 / 创建账号 页面样式（CSS Module）
+ * ------------------------------------------------------------------
+ * 来源：login-preview/index.html 原型，已做三件事：
+ *   1. 所有类名加 `.auth`（:global）前缀并转成嵌套写法，避免与全站 Tailwind / 其它模块冲突；
+ *   2. 删掉原型里的「演示控制条」「首页占位」相关规则；
+ *   3. 页面底色从 body 挪到本组件的根节点，不污染全站。
+ *
+ * 动效约定（与需求对齐）：
+ *   背景变色 1000ms、cubic-bezier(0.16, 1, 0.3, 1)，完成后停留 500ms 再跳转。
+ */
+
+.root {
+  /*
+   * ============================================================
+   * 设计令牌（只作用于登录组件内部）
+   * ============================================================ */
+  --stage-from: #f5f5f7;
+  --stage-to: #ece7f6;
+
+  --card-bg: rgba(255, 255, 255, 0.7);
+  --card-blur: 32px;
+  --card-radius: 20px;
+  --card-border: rgba(255, 255, 255, 0.7);
+  --card-shadow:
+    0 1px 1px rgba(23, 23, 28, 0.03), 0 4px 10px rgba(23, 23, 28, 0.035),
+    0 12px 28px rgba(23, 23, 28, 0.045), 0 32px 64px rgba(23, 23, 28, 0.05);
+
+  --text-1: #1d1d1f;
+  --text-2: #6e6e73;
+  --text-3: #86868b;
+
+  --field-bg: rgba(255, 255, 255, 0.72);
+  --field-border: rgba(60, 60, 67, 0.14);
+  --field-border-hover: rgba(60, 60, 67, 0.24);
+
+  --violet: #6e56cf;
+  --violet-hover: #5f47bd;
+  --violet-text: #6e56cf;
+
+  --red: #c9453d;
+
+  --ease-apple: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+
+  --auth-t: 1000ms;
+  --auth-hold: 500ms;
+  --card-out: 320ms;
+  --to-home: 620ms;
+
+  --font-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+
+  /* ---------- 3. 舞台：全屏灰白，卡片居中 ---------- */
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  overflow: hidden;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+  color: var(--text-1);
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  background-color: var(--stage-from);
+  transition:
+    background-color var(--auth-t) var(--ease-apple),
+    opacity var(--to-home) var(--ease-apple);
+
+  /* 极淡的环境光：让纯色背景有空间感；成功时整体加深 */
+  &::before {
+    content: '';
+    position: absolute;
+    inset: -20%;
+    pointer-events: none;
+    background:
+      radial-gradient(42% 38% at 18% 8%, rgba(255, 255, 255, 0.75), transparent 70%),
+      radial-gradient(55% 45% at 80% 100%, rgba(186, 168, 236, 0.28), transparent 72%);
+    opacity: 0.55;
+    transition: opacity var(--auth-t) var(--ease-apple);
+  }
+
+  /*
+   * 背景大标题 WELCOME：静止时浅灰浮雕字；成功时字身填充由灰白过渡到紫色。
+   * 两层叠放：基础层浅灰文本色；::after 紫色文本 + lighten 叠加，只接管字身像素。
+   */
+  .auth__welcome {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    margin: 0;
+    pointer-events: none;
+    user-select: none;
+    transition: opacity 380ms var(--ease-out);
+  }
+
+  .auth__welcome-item {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    opacity: 0;
+    color: #e2e2e7;
+    font-size: clamp(5.5rem, 16vw, 19rem);
+    font-weight: 700;
+    line-height: 0.9;
+    letter-spacing: -0.055em;
+    white-space: nowrap;
+    -webkit-text-stroke: 1px rgba(60, 60, 67, 0.045);
+    transition:
+      color var(--auth-t) var(--ease-apple),
+      transform var(--auth-t) var(--ease-apple),
+      opacity 320ms var(--ease-out);
+
+    &::after {
+      content: attr(data-text);
+      position: absolute;
+      inset: 0;
+      white-space: nowrap;
+      /* 紫色填充层：普通叠加（**不用** mix-blend-mode: lighten）。
+         之前用 lighten 与浅色背景混合，紫色被冲淡到几乎看不见；现在静止时几乎透明，
+         成功时 opacity 推到 1 就是实心紫字，过渡过程自然由淡紫变到饱和紫。 */
+      color: #9b86e0;
+      -webkit-text-stroke: 0;
+      opacity: 0.05;
+      transition: opacity var(--auth-t) var(--ease-apple);
+    }
+  }
+
+  .auth__welcome.is-in .auth__welcome-item {
+    opacity: 1;
+  }
+
+  .auth__welcome.is-in .auth__welcome-item:nth-child(1) {
+    transition-delay: 80ms;
+  }
+
+  .auth__welcome.is-in .auth__welcome-item:nth-child(2) {
+    transition-delay: 160ms;
+  }
+
+  .auth__welcome.is-in .auth__welcome-item:nth-child(3) {
+    transition-delay: 240ms;
+  }
+
+  /* 舞台内层：转场首页时整体轻微放大 */
+  .auth__stage {
+    display: grid;
+    place-items: center;
+    width: 100%;
+    min-height: 100%;
+    transform-origin: 50% 46%;
+    transition: transform var(--to-home) var(--ease-apple);
+  }
+
+  /* ---------- 4. 登录卡片 ---------- */
+  .auth__card {
+    position: relative;
+    z-index: 1;
+    isolation: isolate;
+    width: min(100%, 400px);
+    padding: 40px 36px 32px;
+    border-radius: var(--card-radius);
+    border: 1px solid var(--card-border);
+    background: var(--card-bg);
+    -webkit-backdrop-filter: blur(var(--card-blur)) saturate(180%);
+    backdrop-filter: blur(var(--card-blur)) saturate(180%);
+    box-shadow: var(--card-shadow);
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+    transition:
+      opacity 520ms var(--ease-apple),
+      transform 640ms var(--ease-apple);
+    will-change: opacity, transform;
+
+    &.is-in {
+      opacity: 1;
+      transform: none;
+    }
+
+    /* 成功后：卡片淡出下沉，把注意力交给背后的 WELCOME */
+    &.is-out {
+      opacity: 0;
+      transform: translateY(10px) scale(0.985);
+      transition:
+        opacity var(--card-out) var(--ease-out),
+        transform var(--card-out) var(--ease-out);
+      pointer-events: none;
+    }
+  }
+
+  /* ---------- 品牌标识 ---------- */
+  .logo {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    margin: 0 0 16px;
+  }
+
+  .logo__mark {
+    display: grid;
+    place-items: center;
+    width: 38px;
+    height: 38px;
+    padding-bottom: 1px;
+    border-radius: 3px;
+    background: #111111;
+    color: #ffffff;
+    font-size: 19px;
+    font-weight: 700;
+    line-height: 1;
+    transition:
+      background-color 260ms var(--ease-out),
+      transform 260ms var(--ease-apple),
+      box-shadow 260ms var(--ease-apple);
+  }
+
+  .logo:hover .logo__mark {
+    background-color: var(--violet);
+    transform: scale(1.06) rotate(-3deg);
+    box-shadow: 0 4px 12px rgba(110, 86, 207, 0.32);
+  }
+
+  .logo__wordmark {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .logo__zh {
+    color: #111111;
+    font-size: 25px;
+    font-weight: 800;
+    line-height: 1;
+    letter-spacing: 0.02em;
+  }
+
+  .logo__en {
+    color: #4b5563;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1;
+    letter-spacing: 0.12em;
+  }
+
+  .auth__subtitle {
+    margin: 0 0 28px;
+    color: var(--text-2);
+    font-size: 14px;
+    line-height: 1.5;
+    letter-spacing: -0.006em;
+    text-align: center;
+  }
+
+  /* ---------- 登录方式切换（分段控件） ---------- */
+  .auth__tabs {
+    position: relative;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px;
+    height: 38px;
+    margin-bottom: 22px;
+    padding: 3px;
+    border-radius: 10px;
+    background: rgba(60, 60, 67, 0.06);
+
+    &[hidden] {
+      display: none;
+    }
+  }
+
+  .auth__tabs-thumb {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: calc(50% - 4px);
+    height: calc(100% - 6px);
+    border-radius: 8px;
+    background: #ffffff;
+    box-shadow:
+      0 1px 2px rgba(0, 0, 0, 0.06),
+      0 2px 8px rgba(0, 0, 0, 0.06);
+    transition: transform 320ms var(--ease-apple);
+  }
+
+  &[data-tab='sms'] .auth__tabs-thumb {
+    transform: translateX(calc(100% + 2px));
+  }
+
+  .auth__tab {
+    position: relative;
+    z-index: 1;
+    border: 0;
+    border-radius: 8px;
+    background: none;
+    color: var(--text-2);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: color 200ms var(--ease-out);
+
+    &[aria-selected='true'] {
+      color: var(--text-1);
+    }
+  }
+
+  /* 创建账号的小标题：为空时完全隐藏 */
+  .auth__step-title {
+    margin: 0;
+    color: var(--text-1);
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.014em;
+    text-align: center;
+
+    &:not(:empty) {
+      margin: -4px 0 14px;
+    }
+
+    &:empty {
+      display: none;
+    }
+  }
+
+  /* ---------- 表单 ---------- */
+  .auth__form {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    margin-bottom: 14px;
+  }
+
+  .field__label {
+    color: var(--text-2);
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: -0.004em;
+  }
+
+  /* 必填标记：紧跟在标签后面的小字，不增加行高 */
+  .field__req {
+    margin-left: 6px;
+    color: var(--violet-text);
+    font-size: 10px;
+    font-style: normal;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    vertical-align: 1px;
+    opacity: 0.7;
+  }
+
+  .field__control {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 46px;
+    padding: 0 14px;
+    border-radius: 12px;
+    border: 1px solid var(--field-border);
+    background: var(--field-bg);
+    transition:
+      border-color 200ms var(--ease-out),
+      background-color 200ms var(--ease-out);
+
+    &:hover {
+      border-color: var(--field-border-hover);
+    }
+
+    /* 聚焦：只有边线变淡紫，不套外发光、不叠浏览器焦点框 */
+    &:focus-within {
+      border-color: var(--violet);
+      background: #fff;
+    }
+  }
+
+  /* 校验失败：红色边线，和聚焦态同一套语言 */
+  .field.has-error .field__control {
+    border-color: var(--red);
+  }
+
+  .field__icon {
+    flex: none;
+    width: 17px;
+    height: 17px;
+    color: var(--text-3);
+    transition: color 200ms var(--ease-out);
+  }
+
+  .field__control:focus-within .field__icon {
+    color: var(--violet-text);
+  }
+
+  .field__input {
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--text-1);
+    font: inherit;
+    font-size: 15px;
+    letter-spacing: -0.01em;
+    outline: none;
+    box-shadow: none;
+    -webkit-appearance: none;
+    appearance: none;
+
+    &::placeholder {
+      color: #a8a8ad;
+    }
+
+    /* 浏览器自动填充的淡黄底色会破坏配色，用大内阴影盖掉 */
+    &:-webkit-autofill {
+      -webkit-text-fill-color: var(--text-1);
+      box-shadow: 0 0 0 100px #fff inset;
+      transition: background-color 9999s ease-out;
+    }
+
+    &:disabled {
+      color: var(--text-3);
+      cursor: default;
+    }
+  }
+
+  /* 显示 / 隐藏密码 */
+  .field__toggle {
+    flex: none;
+    padding: 4px 2px;
+    border: 0;
+    background: none;
+    color: var(--text-3);
+    font: inherit;
+    font-size: 12px;
+    letter-spacing: -0.004em;
+    cursor: pointer;
+    border-radius: 6px;
+    transition: color 180ms var(--ease-out);
+
+    &:hover {
+      color: var(--text-1);
+    }
+  }
+
+  /* 验证码行的「获取验证码」 */
+  .field__send {
+    flex: none;
+    margin-right: -6px;
+    padding: 6px 10px;
+    border: 0;
+    border-radius: 8px;
+    background: rgba(110, 86, 207, 0.1);
+    color: var(--violet-text);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+    transition:
+      background-color 180ms var(--ease-out),
+      color 180ms var(--ease-out);
+
+    &:hover:not(:disabled) {
+      background: rgba(110, 86, 207, 0.16);
+    }
+
+    &:disabled {
+      background: rgba(60, 60, 67, 0.07);
+      color: var(--text-3);
+      cursor: default;
+      font-variant-numeric: tabular-nums;
+    }
+  }
+
+  /* 错误提示：默认高度 0，出错时平滑展开。
+     刻意**不用 @keyframes**：Next dev 下 CSS Module 的关键帧会被拆到另一张样式表，
+     元素上的 animationName 有值但动画不生效（opacity 恒为 0，只剩红框能看到）。
+     用 transition 展开高度 + 淡入，行为稳定且和生产构建一致。 */
+  .auth__error {
+    display: flex;
+    align-items: flex-start;
+    gap: 7px;
+    max-height: 0;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    color: var(--red);
+    font-size: 13px;
+    line-height: 1.45;
+    opacity: 0;
+    transition:
+      max-height 260ms var(--ease-apple),
+      opacity 200ms var(--ease-out),
+      margin 260ms var(--ease-apple);
+
+    &.is-visible {
+      max-height: 96px;
+      margin: 2px 0 6px;
+      opacity: 1;
+    }
+
+    & svg {
+      flex: none;
+      width: 15px;
+      height: 15px;
+      margin-top: 1px;
+    }
+  }
+
+  /* 输入区：创建账号与登录共用，切换时淡入 */
+  .auth__pane {
+    display: none;
+    flex-direction: column;
+
+    &.is-active {
+      display: flex;
+      animation: pane-in 320ms var(--ease-apple) both;
+    }
+  }
+
+  @keyframes pane-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  /* 原型/演示提示条（模拟短信、自动建号说明等） */
+  .auth__demo-code {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 2px 0 12px;
+    padding: 9px 11px;
+    border: 1px dashed rgba(110, 86, 207, 0.34);
+    border-radius: 10px;
+    background: rgba(110, 86, 207, 0.06);
+    color: var(--text-2);
+    font-size: 12px;
+    line-height: 1.45;
+
+    &[hidden] {
+      display: none;
+    }
+
+    & strong {
+      color: var(--violet-text);
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.04em;
+      word-break: break-all;
+    }
+  }
+
+  .auth__demo-tag {
+    flex: none;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: var(--violet-text);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+  }
+
+  /* ---------- 登录按钮 ---------- */
+  .auth__submit {
+    position: relative;
+    display: grid;
+    place-items: center;
+    height: 48px;
+    margin-top: 8px;
+    padding: 0 20px;
+    border: 0;
+    border-radius: 12px;
+    background: var(--violet);
+    color: #fff;
+    font: inherit;
+    font-size: 15px;
+    font-weight: 500;
+    letter-spacing: -0.004em;
+    cursor: pointer;
+    box-shadow:
+      0 1px 2px rgba(0, 0, 0, 0.08),
+      0 6px 16px rgba(110, 86, 207, 0.22);
+    transition:
+      transform 260ms var(--ease-apple),
+      background-color 200ms var(--ease-out),
+      box-shadow 260ms var(--ease-apple);
+
+    &:hover:not(:disabled) {
+      transform: scale(1.018);
+      background: var(--violet-hover);
+      box-shadow:
+        0 2px 4px rgba(0, 0, 0, 0.08),
+        0 10px 24px rgba(110, 86, 207, 0.28);
+    }
+
+    &:active:not(:disabled) {
+      transform: scale(0.985);
+      transition-duration: 120ms;
+    }
+
+    &:disabled {
+      cursor: default;
+    }
+
+    &[data-loading='true'] {
+      background: var(--violet-hover);
+      transform: none;
+    }
+  }
+
+  .auth__submit-label,
+  .auth__submit-loader {
+    grid-area: 1 / 1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    transition:
+      opacity 200ms var(--ease-out),
+      transform 300ms var(--ease-apple);
+  }
+
+  .auth__submit-label {
+    opacity: 1;
+  }
+
+  .auth__submit[data-loading='true'] .auth__submit-label {
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(-4px);
+    transition:
+      opacity 200ms var(--ease-out),
+      transform 300ms var(--ease-apple),
+      visibility 0s linear 300ms;
+  }
+
+  .auth__submit-loader {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  .auth__submit[data-loading='true'] .auth__submit-loader {
+    opacity: 1;
+    transform: none;
+  }
+
+  .auth__submit-loader span {
+    font-size: 14px;
+    font-weight: 400;
+    letter-spacing: 0.01em;
+    color: rgba(255, 255, 255, 0.92);
+  }
+
+  .spinner {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 1.5px solid rgba(255, 255, 255, 0.32);
+    border-top-color: rgba(255, 255, 255, 0.95);
+    animation: spin 700ms linear infinite;
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  /* ---------- 底部文字跳转（不是按钮） ---------- */
+  .auth__footer {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 10px;
+    margin-top: 22px;
+    color: var(--text-2);
+    font-size: 13px;
+    letter-spacing: -0.004em;
+
+    &[hidden] {
+      display: none;
+    }
+  }
+
+  .auth__link {
+    display: inline;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    -webkit-appearance: none;
+    appearance: none;
+    color: var(--violet-text);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: inherit;
+    cursor: pointer;
+    text-decoration: none;
+    text-underline-offset: 3px;
+    transition: color 180ms var(--ease-out);
+
+    &:hover {
+      color: var(--violet-hover);
+      text-decoration: underline;
+    }
+
+    &:focus-visible {
+      outline: none;
+      color: var(--violet-hover);
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+  }
+
+  /* 键盘焦点：只给真正的按钮描边 */
+  :where(button, a):not(.auth__link):focus-visible {
+    outline: 2px solid rgba(110, 86, 207, 0.55);
+    outline-offset: 2px;
+  }
+
+  /* 页面级提示（登录失败 / 自动建号等）：放在卡片外，卡片隐藏后依然可见 */
+  .auth__notice {
+    position: absolute;
+    left: 50%;
+    top: clamp(24px, 6vh, 56px);
+    transform: translateX(-50%);
+    z-index: 3;
+    max-width: min(90vw, 420px);
+    margin: 0;
+    padding: 8px 14px;
+    border: 1px solid rgba(60, 60, 67, 0.12);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.9);
+    -webkit-backdrop-filter: blur(20px);
+    backdrop-filter: blur(20px);
+    box-shadow: 0 6px 20px rgba(23, 23, 28, 0.08);
+    color: var(--text-1);
+    font-size: 12.5px;
+    line-height: 1.45;
+    text-align: center;
+    animation: notice-in 260ms var(--ease-apple) both;
+  }
+
+  @keyframes notice-in {
+    from {
+      opacity: 0;
+      transform: translate(-50%, -6px);
+    }
+    to {
+      opacity: 1;
+      transform: translate(-50%, 0);
+    }
+  }
+  /* ---------- 5. 成功后的相位反馈 ---------- */
+  /*
+   * 注意两件事（都是 CSS Module 带来的差别，容易踩）：
+   * 1. 关键帧名只有**同名**才会被保留：原型里的 `welcome-dim` 与类名 `.auth__welcome`
+   *    只差一个下划线，被 css-loader 当成「与类同名」而重命名到别处 → 不生效。
+   *    所以这里统一用 `auth-*` 前缀，与任何类名都不重名。
+   * 2. 原型的 `.auth[data-phase='leaving'] .auth__welcome-item` 依赖「祖先选择器」；
+   *    改成嵌套后生成了 `.root[data-phase] .auth__welcome-item`，逻辑一致。
+   */
+  &[data-phase='leaving'] {
+    background-color: var(--stage-to);
+
+    &::before {
+      opacity: 1;
+    }
+
+    /* 字身本身先过渡到更浅的紫；真正的「实心紫字」来自 ::after 填充层 */
+    & .auth__welcome-item {
+      color: #d9cef3;
+      transform: translate(-50%, -50%) scale(1.035);
+    }
+
+    /* 填充层 0.05 → 1：这一步才是肉眼看到的「灰白字 → 紫色字」 */
+    & .auth__welcome-item::after {
+      opacity: 1;
+    }
+  }
+
+  /* 过渡完成后收成紫色水印：用 animation 覆盖（不能用 transition，否则 1000ms 过渡会被反向播放） */
+  &[data-done='true'] .auth__welcome-item {
+    animation: auth-welcome-settled 420ms var(--ease-out) forwards;
+  }
+
+  &[data-done='true'] .auth__welcome-item::after {
+    animation: auth-welcome-fill 420ms var(--ease-out) forwards;
+  }
+
+  &[data-done='true'] .auth__welcome {
+    animation: auth-welcome-dim 420ms var(--ease-out) forwards;
+  }
+
+  @keyframes auth-welcome-settled {
+    from {
+      color: #d9cef3;
+      transform: translate(-50%, -50%) scale(1.035);
+    }
+    to {
+      color: #d9cef3;
+      transform: translate(-50%, -50%) scale(1);
+    }
+  }
+
+  @keyframes auth-welcome-fill {
+    from {
+      opacity: 1;
+    }
+    to {
+      /* hold 期间保留 0.85：仍然是明显的紫字，而不是被冲淡成灰 */
+      opacity: 0.85;
+    }
+  }
+
+  @keyframes auth-welcome-dim {
+    from {
+      opacity: 1;
+    }
+    to {
+      opacity: 0.55;
+    }
+  }
+
+  /* hold 与 to-home 都钉住紫色：background 过渡结束后如果没有显式值，
+     元素会回落到基础规则里的 --stage-from（灰白），hold 期间就会「紫着紫着变回灰白」。 */
+  &[data-phase='hold'],
+  &[data-phase='to-home'] {
+    background-color: var(--stage-to);
+
+    & .auth__stage {
+      transform: scale(1.03);
+    }
+  }
+  /* ---------- 8. 响应式 & 可访问性 ---------- */
+  @media (max-width: 420px) {
+    .auth__card {
+      padding: 32px 24px 26px;
+      border-radius: 18px;
+    }
+
+    .logo {
+      gap: 10px;
+      margin-bottom: 22px;
+    }
+
+    .logo__zh {
+      font-size: 20px;
+    }
+
+    .logo__en {
+      font-size: 10px;
+    }
+  }
+
+  @media (max-height: 640px) {
+    .auth__subtitle {
+      margin-bottom: 20px;
+    }
+
+    .auth__footer {
+      margin-top: 16px;
+    }
+  }
+
+  /* 手机竖屏：三个 WELCOME 竖排会顶到卡片，只留中间一行 */
+  @media (max-width: 720px) {
+    .auth__welcome-item {
+      font-size: 30vw;
+    }
+
+    .auth__welcome-item:nth-child(1),
+    .auth__welcome-item:nth-child(3) {
+      display: none;
+    }
+  }
+
+  /* 系统开启「减少动态效果」：去掉位移与缩放，只保留淡入淡出 */
+  @media (prefers-reduced-motion: reduce) {
+    & .auth__welcome-item {
+      transform: translate(-50%, -50%) !important;
+    }
+
+    .auth__card,
+    .auth__card.is-in,
+    .auth__card.is-out {
+      transform: none;
+      transition: opacity 300ms linear;
+    }
+
+    .auth__stage {
+      transform: none;
+    }
+
+    .auth__submit:hover:not(:disabled) {
+      transform: none;
+    }
+
+    .auth__welcome-item {
+      transform: translate(-50%, -50%) !important;
+    }
+
+    .spinner {
+      animation-duration: 1.2s;
+    }
+  }
+}

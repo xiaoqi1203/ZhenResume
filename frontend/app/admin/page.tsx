@@ -26,6 +26,7 @@ import {
 } from '@/components/ui/table';
 import { ErrorBanner } from '@/components/states';
 import { STEP_LABELS } from '@/components/step-timeline';
+import { AuthGuard } from '@/components/auth/auth-guard';
 
 function describeError(error: unknown): string {
   if (error instanceof ApiError) return error.message;
@@ -94,6 +95,16 @@ function AdminSkeleton() {
 }
 
 export default function AdminPage() {
+  // 未登录 → /login?next=/admin；已登录但不是管理员 → 页面内显示「无权访问」。
+  // 真正的权限边界在后端（/api/v1/admin/* 要求 users.role=admin），这里只是体验层。
+  return (
+    <AuthGuard requiredRole="admin">
+      <AdminPageInner />
+    </AuthGuard>
+  );
+}
+
+function AdminPageInner() {
   const [metrics, setMetrics] = React.useState<AdminMetrics | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);

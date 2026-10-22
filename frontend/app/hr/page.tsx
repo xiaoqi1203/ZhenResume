@@ -29,7 +29,9 @@ import { Textarea } from '@/components/ui/textarea';
 import { RiskBadge } from '@/components/risk-badge';
 import { EmptyState, ErrorBanner, InlineSpinner } from '@/components/states';
 import { ACCEPT_ATTRIBUTE, formatFileSize, validateResumeFile } from '@/components/upload-dropzone';
+import { FullPageDeck } from '@/components/full-page-deck/full-page-deck';
 import { useBatchFeed } from '@/lib/use-batch-feed';
+import { AuthGuard } from '@/components/auth/auth-guard';
 
 // 轮询间隔已移入 useBatchFeed（默认走 SSE，失败才回落 2s 轮询）
 
@@ -57,6 +59,8 @@ const ITEM_STATUS_TEXT: Record<string, string> = {
   failed: '失败',
 };
 
+const SLIDE_LABELS = ['岗位 JD 与简历', '初筛结果'];
+
 function describeError(error: unknown): string {
   if (error instanceof ApiError) return error.message;
   if (error instanceof Error) return error.message;
@@ -68,6 +72,15 @@ function makeId(file: File, index: number): string {
 }
 
 export default function HrPage() {
+  // 未登录访问 /hr 时由 AuthGuard 跳 /login?next=/hr，登录后回到本页
+  return (
+    <AuthGuard>
+      <HrPageInner />
+    </AuthGuard>
+  );
+}
+
+function HrPageInner() {
   const [jdText, setJdText] = React.useState('');
   const [jdTitle, setJdTitle] = React.useState('');
   const [entries, setEntries] = React.useState<UploadEntry[]>([]);
@@ -78,6 +91,7 @@ export default function HrPage() {
   const [batchError, setBatchError] = React.useState<string | null>(null);
   const [batchLoading, setBatchLoading] = React.useState(false);
   const [csvExporting, setCsvExporting] = React.useState(false);
+  const [slide, setSlide] = React.useState(0);
 
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const jdIdRef = React.useRef<string | null>(null);
@@ -261,18 +275,31 @@ export default function HrPage() {
   const finished = batch?.finished ?? 0;
   const batchPercent = total === 0 ? 0 : Math.round((finished / total) * 100);
 
-  return (
-    <div className="space-y-6">
+  // 批次一旦创建（或刷新到新批次），自动翻到「初筛结果」这一屏
+  const lastBatchIdRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    const batchId = batch?.batch_id;
+    if (!batchId || batchId === lastBatchIdRef.current) return;
+    lastBatchIdRef.current = batchId;
+    setSlide(1);
+  }, [batch?.batch_id]);
+
+  const slides = [
+    // ---------------- 01 / 岗位 JD + 上传简历（同一卡面） ----------------
+    <div key="intake" className="space-y-5">
       <header className="space-y-2">
-        <h1 className="text-xl font-semibold tracking-tight text-slate-900 sm:text-2xl">
-          HR 批量初筛
+        <p className="text-[10.5px] font-bold uppercase tracking-[0.18em] text-ink-500">
+          HR 批量初筛 / Batch
+        </p>
+        <h1 className="text-[32px] font-extrabold leading-none tracking-tightest text-ink-950 sm:text-[44px]">
+          岗位 JD 与简历
         </h1>
-        <p className="max-w-3xl text-sm leading-relaxed text-slate-600">
-          上传岗位 JD 与多份简历，系统按统一标准并行分析并按总分排序，帮助你先看值得细读的简历。
+        <p className="max-w-3xl text-[13px] leading-relaxed text-ink-600">
+          左边填写岗位 JD，右边选择多份简历；两者填好后启动初筛，结果会自动翻到下一屏。
         </p>
       </header>
 
-      <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+      <div className="flex items-start gap-2 border border-amber-200 bg-amber-50 px-4 py-3 text-[12.5px] leading-relaxed text-amber-900">
         <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" aria-hidden />
         <p>
           系统不替 HR 做录用决策：排序结果只用于提示阅读优先级，所有录用判断仍需人工结合岗位实际、面试与合规要求作出。
@@ -281,17 +308,18 @@ export default function HrPage() {
 
       {error ? <ErrorBanner message={error} onRetry={() => setError(null)} /> : null}
       {fileWarning ? (
-        <div className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-600">
-          <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-400" aria-hidden />
+        <div className="flex items-start gap-2 border border-ink-200 bg-white px-4 py-3 text-[12px] leading-relaxed text-ink-600">
+          <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ink-400" aria-hidden />
           <span>{fileWarning}</span>
         </div>
       ) : null}
 
       <div className="grid gap-4 lg:grid-cols-2">
+        {/* ---- 左：岗位 JD ---- */}
         <Card>
           <CardHeader>
-            <CardTitle>1. 岗位 JD</CardTitle>
-            <p className="text-sm text-slate-500">所有简历都会与这份 JD 做匹配评分。</p>
+            <CardTitle>1 / 岗位 JD</CardTitle>
+            <p className="text-sm text-slate-500">标题选填，JD 正文至少 20 字，用于生成统一的筛选基准。</p>
           </CardHeader>
           <CardContent className="space-y-3">
             <Input
@@ -304,17 +332,18 @@ export default function HrPage() {
               value={jdText}
               onChange={(event) => setJdText(event.target.value)}
               disabled={busy}
-              rows={10}
+              rows={9}
               placeholder={'岗位职责：……\n任职要求：……'}
             />
             <p className="text-right text-xs text-slate-400">{jdText.trim().length} 字</p>
           </CardContent>
         </Card>
 
+        {/* ---- 右：批量上传简历 ---- */}
         <Card>
           <CardHeader>
-            <CardTitle>2. 批量上传简历</CardTitle>
-            <p className="text-sm text-slate-500">支持一次选择多份文件，逐个上传。</p>
+            <CardTitle>2 / 批量上传简历</CardTitle>
+            <p className="text-sm text-slate-500">支持 PDF / DOCX / PNG / JPG / TXT，单份不超过 10MB。</p>
           </CardHeader>
           <CardContent className="space-y-3">
             <input
@@ -333,7 +362,7 @@ export default function HrPage() {
               type="button"
               onClick={() => !busy && fileInputRef.current?.click()}
               disabled={busy}
-              className="flex w-full flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-300 bg-slate-50/60 px-6 py-8 text-center transition-colors hover:border-brand-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              className="flex w-full flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-300 bg-slate-50/60 px-6 py-7 text-center transition-colors hover:border-brand-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
             >
               <span className="flex h-10 w-10 items-center justify-center rounded-full bg-white text-brand-600 shadow-sm ring-1 ring-slate-200">
                 <Upload className="h-4 w-4" aria-hidden />
@@ -360,7 +389,7 @@ export default function HrPage() {
                   </button>
                 </div>
                 <Progress value={uploadProgress} />
-                <ul className="max-h-64 space-y-1.5 overflow-y-auto pr-1">
+                <ul data-deck-scroll="" className="max-h-52 space-y-1.5 overflow-y-auto pr-1">
                   {entries.map((entry) => (
                     <li
                       key={entry.id}
@@ -394,29 +423,62 @@ export default function HrPage() {
         </Card>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3">
-        <Button onClick={startBatch} disabled={busy} size="lg">
-          {busy ? (
-            <>
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-              {uploading ? '正在上传简历…' : '正在创建批次…'}
-            </>
-          ) : (
-            <>
-              <Play className="h-4 w-4" aria-hidden />
-              启动初筛
-            </>
-          )}
-        </Button>
-        {busy ? <InlineSpinner label={`已完成 ${doneCount} / ${entries.length} 份上传`} /> : null}
+      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-ink-200 pt-4">
+        <p className="text-[11.5px] leading-relaxed text-ink-500">
+          填写 JD 并选择简历后启动初筛 · 结果会按总分降序显示在下一屏
+        </p>
+        <div className="flex items-center gap-3">
+          {busy ? <InlineSpinner label={`已完成 ${doneCount} / ${entries.length} 份上传`} /> : null}
+          <Button onClick={startBatch} disabled={busy} size="lg">
+            {busy ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                {uploading ? '正在上传简历…' : '正在创建批次…'}
+              </>
+            ) : (
+              <>
+                <Play className="h-4 w-4" aria-hidden />
+                启动初筛
+              </>
+            )}
+          </Button>
+        </div>
       </div>
+    </div>,
 
-      {/* 批次结果 */}
+    // ---------------- 02 / 初筛结果 ----------------
+    <div key="results" className="space-y-5">
+      <header className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="text-[10.5px] font-bold uppercase tracking-[0.18em] text-ink-500">
+            第 2 屏 / 结果
+          </p>
+          <h2 className="mt-1.5 text-[30px] font-extrabold leading-none tracking-tightest text-ink-950 sm:text-[38px]">
+            初筛结果
+          </h2>
+        </div>
+        {batch ? (
+          <Button variant="outline" size="sm" onClick={() => void exportCsv()} disabled={csvExporting}>
+            {csvExporting ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+            ) : (
+              <Download className="h-3.5 w-3.5" aria-hidden />
+            )}
+            导出 CSV
+          </Button>
+        ) : null}
+      </header>
+
       {batch ? (
         <Card>
           <CardHeader>
             <CardTitle className="flex flex-wrap items-center justify-between gap-2">
-              <span>初筛结果</span>
+              <span className="flex flex-wrap items-center gap-3">
+                <span>批次结果</span>
+                <span className="text-[11px] font-medium normal-case tracking-normal text-ink-500">
+                  {ITEM_STATUS_TEXT[batch.status] ?? batch.status} · 已完成 {finished} / {total}
+                </span>
+              </span>
               <span className="flex items-center gap-2">
                 <Button variant="outline" size="sm" onClick={refreshBatch} disabled={batchLoading}>
                   {batchLoading ? (
@@ -426,24 +488,10 @@ export default function HrPage() {
                   )}
                   刷新
                 </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void exportCsv()}
-                  disabled={csvExporting}
-                >
-                  {csvExporting ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
-                  ) : (
-                    <Download className="h-3.5 w-3.5" aria-hidden />
-                  )}
-                  导出 CSV
-                </Button>
               </span>
             </CardTitle>
             <p className="text-sm text-slate-500">
-              批次 {batch.batch_id} · 状态 {ITEM_STATUS_TEXT[batch.status] ?? batch.status} · 已完成{' '}
-              {finished} / {total}
+              批次 {batch.batch_id} · 按总分降序排列，点击「查看报告」进入单份详情。
             </p>
           </CardHeader>
           <CardContent className="space-y-3">
@@ -519,9 +567,20 @@ export default function HrPage() {
       ) : (
         <EmptyState
           title="还没有初筛批次"
-          description="填写 JD、选择简历并点击「启动初筛」，结果会以表格形式按总分降序展示。"
+          description="回到上一屏填写 JD、选择简历并点击「启动初筛」，结果会以表格形式按总分降序展示。"
         />
       )}
-    </div>
+    </div>,
+  ];
+
+  return (
+    <FullPageDeck
+      eyebrow="HR 批量初筛"
+      ariaLabel="HR 批量初筛流程"
+      slideLabels={SLIDE_LABELS}
+      slides={slides}
+      index={slide}
+      onIndexChange={setSlide}
+    />
   );
 }

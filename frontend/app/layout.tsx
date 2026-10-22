@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import SiteHeader from '@/components/site-header';
+import SiteHeaderSlot from '@/components/site-header-slot';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -27,7 +28,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         </a>
 
         <div className="sheet">
-          <SiteHeader />
+          <SiteHeaderSlot>
+            <SiteHeader />
+          </SiteHeaderSlot>
 
           <main id="main" className="mx-auto w-full max-w-[1120px] px-5 py-12 sm:px-8 sm:py-16">
             {children}

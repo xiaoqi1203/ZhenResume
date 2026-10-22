@@ -39,11 +39,13 @@ import type {
   Resume,
   ResumeListResponse,
   ShareResponse,
+  SharedReport,
   SubmitFeedbackPayload,
   TaskListResponse,
   TaskStatusResponse,
   TemplateDetail,
   TemplateListResponse,
+  UpdateResumePayload,
 } from './types';
 
 /* ------------------------------------------------------------------ */
@@ -184,10 +186,43 @@ function getDeviceId(): string | null {
   }
 }
 
+/**
+ * 登录态：账号体系上线后，前端在 localStorage 里存一份 `auth.token`（见 lib/auth.ts）。
+ * 这里只负责把它挂到请求头；**不**在这里 import lib/auth，避免循环依赖（auth 也要用 request）。
+ */
+const AUTH_TOKEN_STORAGE_KEY = 'auth.token';
+
+function getAuthToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** 401 统一处理：清掉本地登录态并跳登录页（带 next 回跳）。登录页本身不跳，避免死循环。 */
+function handleUnauthorized(): void {
+  if (typeof window === 'undefined') return;
+  const { pathname, search } = window.location;
+  try {
+    window.localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+    window.localStorage.removeItem('auth.session');
+    window.localStorage.removeItem('auth.accounts');
+  } catch {
+    /* ignore */
+  }
+  if (pathname.startsWith('/login')) return;
+  const next = encodeURIComponent(pathname + search);
+  window.location.assign(`/login?next=${next}`);
+}
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { method = 'GET', body, formData, signal, allowEmpty = false } = options;
 
   const headers: Record<string, string> = { Accept: 'application/json' };
+  // 登录后优先走 Bearer（后端 get_current_user 双通道：Bearer 优先，回落 X-Device-Id）
+  const token = getAuthToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
   const deviceId = getDeviceId();
   if (deviceId) headers['X-Device-Id'] = deviceId;
   let payloadBody: BodyInit | undefined;
@@ -216,7 +251,10 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   }
 
   if (!response.ok) {
-    throw await toApiError(response);
+    const error = await toApiError(response);
+    // 401 = 没登录 / token 失效：清本地登录态并去登录页（带回来路径）
+    if (response.status === 401) handleUnauthorized();
+    throw error;
   }
 
   if (allowEmpty || response.status === 204) {
@@ -350,6 +388,8 @@ export function streamTask(
   const headers: Record<string, string> = { Accept: 'text/event-stream' };
   const deviceId = getDeviceId();
   if (deviceId) headers['X-Device-Id'] = deviceId;
+  const authToken = getAuthToken();
+  if (authToken) headers.Authorization = `Bearer ${authToken}`;
 
   void (async () => {
     try {
@@ -410,6 +450,8 @@ export function streamBatch(
   const headers: Record<string, string> = { Accept: 'text/event-stream' };
   const deviceId = getDeviceId();
   if (deviceId) headers['X-Device-Id'] = deviceId;
+  const authToken = getAuthToken();
+  if (authToken) headers.Authorization = `Bearer ${authToken}`;
 
   void (async () => {
     try {
@@ -458,13 +500,79 @@ export function getReport(reportId: string): Promise<Report> {
   return request<Report>(`${API_PREFIX}/reports/${reportId}`);
 }
 
-/** Markdown 导出地址，供 `<a download>` 直接使用。 */
+/** Markdown 导出地址（仅用于展示/调试；真正下载请用 downloadReportMarkdown）。 */
 export function getReportMarkdownUrl(reportId: string): string {
   return apiV1Url(`/reports/${reportId}/markdown`);
 }
 
-export function getReportShare(reportId: string): Promise<ShareResponse> {
-  return request<ShareResponse>(`${API_PREFIX}/reports/${reportId}/share`);
+/**
+ * 下载报告 Markdown。
+ *
+ * ⚠️ 不能用 `<a href download>`：浏览器原生导航**不会携带 `X-Device-Id` 请求头**，
+ * 后端会按 anonymous 用户处理 → 归属校验失败 → 404（这正是之前导出按钮点了没反应的根因）。
+ * 所以这里走 fetch 拿 blob，再交给前端触发保存。
+ */
+export async function downloadReportMarkdown(
+  reportId: string,
+): Promise<{ blob: Blob; filename: string }> {
+  const headers: Record<string, string> = {};
+  const deviceId = getDeviceId();
+  if (deviceId) headers['X-Device-Id'] = deviceId;
+  const authToken = getAuthToken();
+  if (authToken) headers.Authorization = `Bearer ${authToken}`;
+
+  let response: Response;
+  try {
+    response = await fetch(apiV1Url(`/reports/${reportId}/markdown`), {
+      headers,
+      cache: 'no-store',
+    });
+  } catch {
+    throw new ApiError('NETWORK_ERROR', NETWORK_ERROR_MESSAGE, 0);
+  }
+  if (!response.ok) {
+    const error = await toApiError(response);
+    // 401 = 没登录 / token 失效：清本地登录态并去登录页（带回来路径）
+    if (response.status === 401) handleUnauthorized();
+    throw error;
+  }
+
+  const disposition = response.headers.get('content-disposition') ?? '';
+  const utf8 = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
+  const plain = /filename="?([^";]+)"?/i.exec(disposition);
+  let filename = `zhenresume-report-${reportId}.md`;
+  if (utf8?.[1]) {
+    try {
+      filename = decodeURIComponent(utf8[1].trim());
+    } catch {
+      /* 解析失败用兜底文件名 */
+    }
+  } else if (plain?.[1]) {
+    filename = plain[1].trim();
+  }
+
+  return { blob: await response.blob(), filename };
+}
+
+/** 生成分享链接（默认 7 天、不含简历原文；includeRaw=true 才带原文） */
+export function createReportShare(reportId: string, includeRaw = false): Promise<ShareResponse> {
+  return request<ShareResponse>(`${API_PREFIX}/reports/${reportId}/share`, {
+    method: 'POST',
+    body: { include_raw: includeRaw },
+  });
+}
+
+/** 撤销该报告的全部分享链接 */
+export function revokeReportShare(reportId: string): Promise<void> {
+  return request<void>(`${API_PREFIX}/reports/${reportId}/share`, {
+    method: 'DELETE',
+    allowEmpty: true,
+  });
+}
+
+/** 公开读取分享内容（无需设备 ID） */
+export function getSharedReport(token: string): Promise<SharedReport> {
+  return request<SharedReport>(`${API_PREFIX}/shares/${token}`);
 }
 
 /* ------------------------------------------------------------------ */
@@ -586,6 +694,8 @@ export async function downloadBatchExport(batchId: string): Promise<DownloadedFi
   const headers: Record<string, string> = {};
   const deviceId = getDeviceId();
   if (deviceId) headers['X-Device-Id'] = deviceId;
+  const authToken = getAuthToken();
+  if (authToken) headers.Authorization = `Bearer ${authToken}`;
 
   let response: Response;
   try {
@@ -595,12 +705,18 @@ export async function downloadBatchExport(batchId: string): Promise<DownloadedFi
   }
 
   if (!response.ok) {
-    throw await toApiError(response);
+    const error = await toApiError(response);
+    // 401 = 没登录 / token 失效：清本地登录态并去登录页（带回来路径）
+    if (response.status === 401) handleUnauthorized();
+    throw error;
   }
 
   return {
     blob: await response.blob(),
     contentDisposition: response.headers.get('Content-Disposition'),
+    // CSV 导出没有分页概念
+    pageCount: null,
+    fitScale: null,
   };
 }
 
@@ -631,6 +747,22 @@ export function createResumeFromEditor(
 }
 
 /**
+ * 更新已有简历（`PUT /api/v1/resumes/{resume_id}`）。
+ *
+ * 编辑器「保存到账号」/ 导出 / 发起诊断都走这里，避免每改一次就新建一份。
+ * 后端会按 `X-Device-Id`（或 Bearer）校验归属，非本人返回 404 RESUME_NOT_FOUND。
+ */
+export function updateResume(
+  resumeId: string,
+  payload: UpdateResumePayload,
+): Promise<EditorResume> {
+  return request<EditorResume>(`${API_PREFIX}/resumes/${resumeId}`, {
+    method: 'PUT',
+    body: payload,
+  });
+}
+
+/**
  * 简历导出地址（仅用于展示/调试）。
  *
  * ⚠️ 不要把它直接塞进 `<a href download>`：浏览器的原生导航**不会带上 `X-Device-Id`
@@ -645,6 +777,10 @@ export interface DownloadedFile {
   blob: Blob;
   /** 原始 Content-Disposition，交给调用方解析文件名 */
   contentDisposition: string | null;
+  /** PDF 实际页数（后端 X-Page-Count 头） */
+  pageCount: number | null;
+  /** fit=one 时实际使用的缩放比例（后端 X-Fit-Scale 头） */
+  fitScale: number | null;
 }
 
 /**
@@ -653,29 +789,46 @@ export interface DownloadedFile {
  * 用 fetch 而不是 `<a download>` 的唯一原因是请求头：后端按 `X-Device-Id` 校验归属，
  * 只有 fetch 能带上它。顺带的好处是能读到状态码，从而区分 503 PDF_UNAVAILABLE
  * （服务端没配 LibreOffice），给出「改用 DOCX 或浏览器打印」的提示。
+ *
+ * `fit="one"` 只对 PDF 生效：后端会逐档缩小字号把内容压到 1 页，
+ * 实际页数与缩放比例在响应头里返回。
  */
 export async function downloadResumeExport(
   resumeId: string,
   format: ExportFormat,
+  options: { fit?: 'none' | 'one' } = {},
 ): Promise<DownloadedFile> {
   const headers: Record<string, string> = {};
   const deviceId = getDeviceId();
   if (deviceId) headers['X-Device-Id'] = deviceId;
+  const authToken = getAuthToken();
+  if (authToken) headers.Authorization = `Bearer ${authToken}`;
+
+  const query = options.fit === 'one' ? '?fit=one' : '';
+  const url = `${getResumeExportUrl(resumeId, format)}${query}`;
 
   let response: Response;
   try {
-    response = await fetch(getResumeExportUrl(resumeId, format), { headers, cache: 'no-store' });
+    response = await fetch(url, { headers, cache: 'no-store' });
   } catch {
     throw new ApiError('NETWORK_ERROR', NETWORK_ERROR_MESSAGE, 0);
   }
 
   if (!response.ok) {
-    throw await toApiError(response);
+    const error = await toApiError(response);
+    // 401 = 没登录 / token 失效：清本地登录态并去登录页（带回来路径）
+    if (response.status === 401) handleUnauthorized();
+    throw error;
   }
+
+  const pageCount = Number(response.headers.get('X-Page-Count') ?? '');
+  const fitScale = Number(response.headers.get('X-Fit-Scale') ?? '');
 
   return {
     blob: await response.blob(),
     contentDisposition: response.headers.get('Content-Disposition'),
+    pageCount: Number.isFinite(pageCount) && pageCount > 0 ? pageCount : null,
+    fitScale: Number.isFinite(fitScale) && fitScale > 0 ? fitScale : null,
   };
 }
 
@@ -703,7 +856,10 @@ export const api = {
   // 报告
   getReport,
   getReportMarkdownUrl,
-  getReportShare,
+  downloadReportMarkdown,
+  createReportShare,
+  revokeReportShare,
+  getSharedReport,
   // 定价与支付
   listPlans,
   createOrder,
@@ -729,6 +885,7 @@ export const api = {
   getTemplate,
   // 编辑器
   createResumeFromEditor,
+  updateResume,
   getResumeExportUrl,
   downloadResumeExport,
   // 工具

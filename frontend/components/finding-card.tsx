@@ -55,6 +55,13 @@ export function FindingCard({ finding, className }: FindingCardProps) {
   };
 
   const evidence = finding.evidence;
+  const span = evidence?.span;
+  // 旧实现无条件渲染 `[{span?.[0] ?? 0}, {span?.[1] ?? 0}]`，于是没有 span 的条目
+  // （规则层的"结构性建议"、引文定位失败的条目）全都显示成 `[0, 0]` —— 看起来像程序坏了。
+  // 现在只有真的有 span 才显示，且用「定位：第 X–Y 字」这种用户能懂的说法。
+  const hasSpan =
+    Array.isArray(span) && span.length === 2 && (span[1] as number) > (span[0] as number);
+  const unverified = Boolean(evidence?.unverified) || (!hasSpan && Boolean(evidence?.quote));
 
   return (
     <article
@@ -124,17 +131,34 @@ export function FindingCard({ finding, className }: FindingCardProps) {
           {finding.suggestion}
         </p>
         <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-ink-500">
-          <span>证据来源：{SOURCE_LABELS[evidence.source] ?? evidence.source}</span>
-          <span className="text-ink-300">/</span>
-          <span className="font-mono">{evidence.field}</span>
-          <span className="text-ink-300">/</span>
-          <span className="font-mono">
-            [{evidence.span?.[0] ?? 0}, {evidence.span?.[1] ?? 0}]
-          </span>
+          <span>证据来源：{SOURCE_LABELS[evidence?.source] ?? evidence?.source ?? '未标注'}</span>
+          {evidence?.field ? (
+            <>
+              <span className="text-ink-300">/</span>
+              <span className="font-mono">{evidence.field}</span>
+            </>
+          ) : null}
+          {hasSpan ? (
+            <>
+              <span className="text-ink-300">/</span>
+              <span className="font-mono">
+                定位第 {(span as [number, number])[0]}–{(span as [number, number])[1]} 字
+              </span>
+            </>
+          ) : null}
         </p>
-        {evidence.quote ? (
+        {evidence?.quote ? (
           <p className="border-l-2 border-ink-300 bg-ink-50 px-2.5 py-1.5 text-[11.5px] leading-relaxed text-ink-600">
             引用：「{evidence.quote}」
+          </p>
+        ) : (
+          <p className="text-[11px] leading-relaxed text-ink-400">
+            该结论由规则直接判定（如覆盖率、篇幅、时间线计算），不针对某一句原文，因此没有引文。
+          </p>
+        )}
+        {unverified && evidence?.quote ? (
+          <p className="text-[11px] leading-relaxed text-amber-700">
+            ⚠ 这句引文未能在原文中精确定位（可能是 PDF 排版或换行导致），仅供参考。
           </p>
         ) : null}
         {finding.citations && finding.citations.length > 0 ? (

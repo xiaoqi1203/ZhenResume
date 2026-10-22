@@ -151,13 +151,18 @@
 @media print {
   @page {
     size: A4;
-    margin: 14mm;
+    /* 版式 PDF 必须由模板自己控制页边距：cobalt 的页首带 / navy 的角块要贴到纸边。
+       旧 ATS 预览的 article 本身也带 68/76px 内边距，去掉 @page 边距不会贴字。 */
+    margin: 0;
   }
 
   html,
   body {
     background: #ffffff !important;
     padding: 0 !important;
+    /* 保留模板的页首色块 / 背景 / hairline —— 浏览器默认会为省墨抹平背景色 */
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
 
   /* 打印时不打印紫色画布与站点框架 */
@@ -179,14 +184,73 @@
     margin: 0 !important;
   }
 
+  /* 打印时左表单已被隐藏，grid 还保留两列会把 210mm 的 A4 挤到 46% 列里 */
+  .editor-layout {
+    display: block !important;
+    /* 父级 space-y-6 会给它 24px margin-top；打印时必须归零，否则页首色块离纸边有白边 */
+    margin: 0 !important;
+  }
+
   /* 预览卡片的滚动容器在打印时不能裁剪内容 */
   .print-area {
     border: 0 !important;
     box-shadow: none !important;
     padding: 0 !important;
+    margin: 0 !important;
     max-width: none !important;
     max-height: none !important;
     overflow: visible !important;
+    width: 210mm !important;
+  }
+
+  /*
+   * 屏幕上的 A4Frame 会把 794px 页面按右侧预览列宽等比缩小；打印时这个 transform
+   * 必须还原成 1:1，否则“版式 PDF”会缩成一小块。这里只作用于打印，屏幕缩放不变。
+   */
+  .print-area .a4-frame {
+    width: 210mm !important;
+    overflow: visible !important;
+  }
+
+  .print-area .a4-frame-height {
+    height: auto !important;
+  }
+
+  .print-area .a4-frame-inner {
+    width: 210mm !important;
+    transform: none !important;
+  }
+
+  .print-area .template-resume {
+    width: 210mm !important;
+    min-height: 297mm !important;
+  }
+
+  /*
+   * 真实版式简历（components/editor/template-resume.tsx）：
+   * 屏幕与打印共用同一份 DOM，navy 的几何块 / cobalt 的页首色带 / ivory 的纸底
+   * 必须原样输出，否则打印/另存 PDF 会变成白底黑字的“掉色”稿。
+   * `.print-area` 里只保留 A4 页面本身，分页交给浏览器（条目自身 break-inside: avoid）。
+   */
+  .template-resume,
+  .template-resume * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+  }
+
+  .template-resume {
+    border: 0 !important;
+    box-shadow: none !important;
+  }
+
+  /*
+   * 没有上传头像时的「照片位」只是屏幕提示，不能出现在最终 PDF 里。
+   * 占位框本身用内联 style display:flex，Tailwind 的 print:hidden 覆盖不了，
+   * 必须用 !important 在打印媒体里强制隐藏。
+   */
+  .avatar-placeholder {
+    display: none !important;
   }
 
   a[href]::after {
