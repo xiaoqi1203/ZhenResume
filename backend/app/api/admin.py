@@ -14,7 +14,7 @@ from ..models import AnalysisReport, AnalysisTask, Feedback, PromptTemplate, Use
 from ..schemas import PromptUpsert
 from ..serializers import serialize_feedback
 from ..services import prompts
-from .deps import get_current_user
+from .deps import require_admin
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -22,7 +22,7 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 @router.get("/metrics")
 def metrics(
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_admin),
 ) -> dict:
     tasks_total = db.execute(select(func.count()).select_from(AnalysisTask)).scalar_one()
     tasks_done = db.execute(select(func.count()).select_from(AnalysisTask).where(AnalysisTask.status == "done")).scalar_one()
@@ -94,7 +94,7 @@ def metrics(
 @router.get("/prompts")
 def list_prompts(
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_admin),
 ) -> dict:
     """返回每个 name 的最新版本 + 当前生效来源（code=代码默认 / db=后台覆盖）。"""
     rows = db.execute(select(PromptTemplate).order_by(PromptTemplate.name, PromptTemplate.version)).scalars().all()
@@ -121,7 +121,7 @@ def list_prompts(
 def upsert_prompt(
     payload: PromptUpsert,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_admin),
 ) -> dict:
     current_max = db.execute(
         select(func.coalesce(func.max(PromptTemplate.version), 0)).where(PromptTemplate.name == payload.name)
@@ -146,7 +146,7 @@ def list_feedback(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_admin),
 ) -> dict:
     total = db.execute(select(func.count()).select_from(Feedback)).scalar_one()
     rows = db.execute(select(Feedback).order_by(Feedback.created_at.desc()).limit(limit).offset(offset)).scalars().all()

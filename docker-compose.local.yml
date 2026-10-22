@@ -29,6 +29,9 @@ x-backend-build: &backend-build
     PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
     # 离线兜底：先在宿主机 `pip download -d backend/wheels`，再传 PIP_FIND_LINKS=wheels
     PIP_FIND_LINKS: ${PIP_FIND_LINKS:-}
+    # Debian 官方源在部分网络下很慢（尤其 LibreOffice/中文字体大包）；
+    # 国内可设 APT_MIRROR=https://mirrors.aliyun.com。留空 = 保持官方源。
+    APT_MIRROR: ${APT_MIRROR:-}
     # 本地 OCR 引擎（图片简历 / 扫描版 PDF；零外部 API）。
     #   rapidocr（默认）= 纯 pip + 3 个系统库，约 70MB，中文效果好
     #   tesseract      = 更轻（apt 约 15MB），中文精度略逊

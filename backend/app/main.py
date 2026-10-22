@@ -41,6 +41,13 @@ async def lifespan(_app: FastAPI):
         logger.info(
             "LLM 降级链（按序尝试）：%s", " → ".join(settings.llm_chain_summary)
         )
+    if not (settings.auth_secret or "").strip():
+        logger.warning("AUTH_SECRET 未配置：账号 JWT 使用开发默认密钥，禁止用于生产。")
+    logger.info(
+        "鉴权：%s（短信开发模式=%s）",
+        "必须登录" if settings.auth_required else "Bearer 优先，未登录回落 X-Device-Id",
+        settings.sms_dev_mode,
+    )
     logger.info(
         "工作流引擎：%s（并行=%s，checkpoint=%s）",
         settings.workflow_engine,
@@ -78,15 +85,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
     # 前端导出 PDF 需要用 fetch 拿 blob 自行触发下载，此时 JS 默认**读不到**
-    # Content-Disposition（非简单响应头），不暴露就取不到文件名。
-    expose_headers=["Content-Disposition"],
+    # Content-Disposition（非简单响应头），不暴露就取不到文件名；
+    # X-Page-Count / X-Fit-Scale 是导出接口的附加信息（实际页数、fit=one 的缩放比例）。
+    expose_headers=["Content-Disposition", "X-Page-Count", "X-Fit-Scale"],
 )
 
 
 @app.exception_handler(AppError)
 async def app_error_handler(_request: Request, exc: AppError) -> JSONResponse:
-    """业务异常 → 契约 §8 的统一错误结构。"""
-    return JSONResponse(status_code=exc.status_code, content=exc.to_payload())
+    """业务异常 → 契约 §8 的统一错误结构。
+
+    401 额外带 `WWW-Authenticate: Bearer`：前端据此区分「没登录」与其它业务错误，
+    并清理本地登录态、跳回 /login。
+    """
+    headers = {"WWW-Authenticate": "Bearer"} if exc.status_code == 401 else None
+    return JSONResponse(status_code=exc.status_code, content=exc.to_payload(), headers=headers)
 
 
 @app.exception_handler(RequestValidationError)

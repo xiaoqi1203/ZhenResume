@@ -26,8 +26,22 @@ def hr_summary_node(state: WorkflowState) -> dict:
     需要更"像人写"的摘要时，再单独开一个 `HR_SUMMARY_LLM=true` 开关走 LLM。
     """
     ctx = ctx_from_state(state)
-    scores = ctx.scores or {}
-    risk_level = analyze.risk_level_from_score(int(scores.get("risk") or 0))
+    # **不走 qc**，所以这里补一次与求职者侧同口径的定稿：
+    # 分数基数取规则基线、风险等级吸收全维度红色、摘要里的数字与分数同源。
+    # 不补的话 HR 排序表会出现「1 条红 + risk_level=yellow」——
+    # 而且和同一份简历在求职者侧的报告等级不一致。
+    finalized = analyze.finalize_report(
+        parsed_resume=ctx.parsed_resume,
+        parsed_jd=ctx.parsed_jd,
+        role_family=ctx.role_family,
+        raw_text=ctx.resume_text,
+        jd_text=ctx.jd_text,
+        final_findings=ctx.findings,
+    )
+    scores = finalized["scores"]
+    risk_level = finalized["risk_level"]
+    ctx.scores = scores
+    ctx.risk_level = risk_level
 
     refs = [
         {
@@ -55,6 +69,8 @@ def hr_summary_node(state: WorkflowState) -> dict:
     return {
         "summary": summary,
         "knowledge_refs": refs,
+        # HR 排序表的 risk_level 也要一起带出去（从单项 risk 分派生会让红条与绿标并存）
+        "risk_level": risk_level,
         "outputs": {"hr_summary": output},
     }
 

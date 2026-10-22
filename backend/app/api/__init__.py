@@ -2,16 +2,18 @@
 
 from fastapi import APIRouter
 
-from . import admin, billing, feedback, health, hr, jds, knowledge, reports, resumes, tasks, templates
+from . import admin, auth, billing, feedback, health, hr, jds, knowledge, reports, resumes, tasks, templates
 
 api_router = APIRouter(prefix="/api/v1")
 
 api_router.include_router(health.router)
+api_router.include_router(auth.router)
 api_router.include_router(templates.router)
 api_router.include_router(resumes.router)
 api_router.include_router(jds.router)
 api_router.include_router(tasks.router)
 api_router.include_router(reports.router)
+api_router.include_router(reports.shares_router)
 api_router.include_router(billing.plans_router)
 api_router.include_router(billing.payments_router)
 api_router.include_router(knowledge.router)

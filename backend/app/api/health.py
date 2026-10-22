@@ -18,7 +18,7 @@ def health() -> dict:
         "llm_provider": settings.llm_provider,
         "llm_model": settings.active_model,
         # 契约 §1 之外的新增字段（向前兼容）：完整降级链，运维一眼看出配了哪些层。
-        # 例：["aliyun:qwen3.8-max", "aliyun:qwen3.7-flash", "deepseek:deepseek-flash"]
+        # 例：["aliyun:deepseek-v4.1-flash-1017", "deepseek:deepseek-flash"]
         "llm_chain": settings.llm_chain_summary,
         # 检索配置：排查"知识库引用突然为空"时先看这几项（provider 与维度必须与库里一致）
         "embedding_provider": settings.embedding_provider,

@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..db import get_db
-from ..errors import JdNotFound, QuotaExceeded, ResumeNotFound, TaskNotFound
+from ..errors import JdNotFound, QuotaExceeded, ResumeNotFound, TaskNotFound, ValidationError
 from ..models import AnalysisReport, AnalysisTask, JobDescription, Payment, Resume, User
 from ..schemas import TaskCreate
 from ..queue import enqueue_analysis
@@ -31,13 +31,45 @@ STREAM_POLL_S = 0.5          # 服务端轮询间隔
 STREAM_HEARTBEAT_POLLS = 20  # 每 20 次（~10s）发一个心跳注释行，防代理断连
 STREAM_MAX_S = 900           # 硬上限，避免连接泄漏
 
-
 def _has_paid_access(db: Session, user: User) -> bool:
     """是否存在有效付费记录（MVP 只判断有没有成功支付过）。"""
     paid = db.execute(
         select(func.count()).select_from(Payment).where(Payment.user_id == user.id, Payment.status == "paid")
     ).scalar_one()
     return bool(paid)
+
+
+# 少于这个字符数视为"没抽取到内容"：正常简历的姓名+联系方式就超过它了
+MIN_RESUME_CHARS = 40
+
+
+def analyze_guard(resume: Resume) -> str | None:
+    """判断这份简历是否值得分析；不值得返回**给用户看的原因**，值得返回 None。
+
+    判据（都来自实测出的失败样本）：
+    - `raw_text` 几乎为空（空文件、扫描件 OCR 失败、纯空白）；
+    - 解析结果里既没有工作经历、也没有项目/教育/技能 —— 这类输入跑完整流水线
+      只会得到"中等水平、风险较低"的假结论。
+
+    只在**任务创建时**拦截，不拦上传：上传件仍可下载/导出，用户能看到自己传了什么。
+    """
+    raw = (resume.raw_text or "").strip()
+    if len(raw) < MIN_RESUME_CHARS:
+        return (
+            "这份简历没有抽取到可分析的文本（可能是扫描件、图片或空文件）。"
+            "请上传含文字层的 PDF / DOCX，或直接粘贴纯文本后再诊断。"
+        )
+    parsed = resume.parsed_json or {}
+    has_structure = any(
+        parsed.get(key)
+        for key in ("work", "projects", "education", "skills")
+    )
+    if not has_structure:
+        return (
+            "简历文本已抽取，但没有识别出工作经历、项目、教育或技能中的任何一项，"
+            "继续诊断会得到没有依据的分数。请检查排版（多栏版的建议改用单栏模板）后重新上传。"
+        )
+    return None
 
 
 @router.post("", status_code=202)
@@ -54,8 +86,19 @@ def create_task(
     if jd is None or jd.user_id != user.id:
         raise JdNotFound()
 
-    # 免费额度闸门（aaa.md §3.7：免费 3 次基础诊断）
-    if user.free_quota_used >= settings.free_quota and not _has_paid_access(db, user):
+    # ---- 可分析性闸门 ----
+    # 没有这一步，"扫描件 OCR 失败 → raw_text 为空"会被一路跑完，产出一份
+    # 「综合得分 55 分、风险较低」的报告（实测：空文本 / 纯空白 / 纯英文 /
+    # 全角乱码共 8 个边界输入都是 green）。给用户一个假结论比报错更伤信任。
+    unanalyzable = analyze_guard(resume)
+    if unanalyzable:
+        raise ValidationError(
+            unanalyzable,
+            code="RESUME_UNANALYZABLE",
+        )
+
+    # 免费额度闸门（默认关闭；QUOTA_ENFORCED=true 时才生效）
+    if settings.quota_enforced and user.free_quota_used >= settings.free_quota and not _has_paid_access(db, user):
         raise QuotaExceeded(f"免费额度 {settings.free_quota} 次已用完，请选择付费套餐继续诊断")
 
     task = AnalysisTask(
@@ -63,6 +106,7 @@ def create_task(
         resume_id=resume.id,
         jd_id=jd.id,
         type="single",
+        mode=payload.mode,
         status="pending",
         progress=0.0,
     )
@@ -107,8 +151,13 @@ def get_task(
     if task is None or task.user_id != user.id:
         raise TaskNotFound()
 
-    report_id = db.execute(select(AnalysisReport.id).where(AnalysisReport.task_id == task.id)).scalar_one_or_none()
-    return serialize_task(task, steps=list(task.steps), report_id=report_id)
+    report = db.execute(select(AnalysisReport).where(AnalysisReport.task_id == task.id)).scalar_one_or_none()
+    return serialize_task(
+        task,
+        steps=list(task.steps),
+        report_id=report.id if report else None,
+        report_extra=report.extra_json if report else None,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -130,10 +179,15 @@ def _snapshot(task_id: str) -> dict | None:
         task = db.get(AnalysisTask, task_id)
         if task is None:
             return None
-        report_id = db.execute(
-            select(AnalysisReport.id).where(AnalysisReport.task_id == task.id)
+        report = db.execute(
+            select(AnalysisReport).where(AnalysisReport.task_id == task.id)
         ).scalar_one_or_none()
-        return serialize_task(task, steps=list(task.steps), report_id=report_id)
+        return serialize_task(
+            task,
+            steps=list(task.steps),
+            report_id=report.id if report else None,
+            report_extra=report.extra_json if report else None,
+        )
 
 
 async def _event_stream(task_id: str) -> AsyncIterator[str]:

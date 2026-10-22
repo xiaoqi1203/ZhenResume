@@ -27,6 +27,9 @@ ARG PIP_TRUSTED_HOST=""
 # 离线 wheel 兜底：把 `pip download` 下好的 wheel 放进构建上下文（backend/wheels/），
 # 传 PIP_FIND_LINKS=wheels 即可完全不走网络 —— 国内构建最稳的一条路。
 ARG PIP_FIND_LINKS=""
+# 国内构建时可传 APT_MIRROR=https://mirrors.aliyun.com，把 deb.debian.org 换掉。
+# 默认空 = 保持基础镜像官方源（不改本机/海外部署的行为）。
+ARG APT_MIRROR=""
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -40,6 +43,11 @@ WORKDIR /app
 # ---- 依赖层（单独一层，改代码不会触发重装）----
 # curl 供 HEALTHCHECK 使用：python:*-slim 基础镜像本身不带 curl。
 RUN set -eux; \
+    if [ -n "$APT_MIRROR" ]; then \
+      for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
+        [ -f "$f" ] && sed -i "s|https\?://deb.debian.org|$APT_MIRROR|g" "$f"; \
+      done; \
+    fi; \
     apt-get update; \
     apt-get install -y --no-install-recommends curl; \
     rm -rf /var/lib/apt/lists/*
@@ -67,6 +75,11 @@ RUN set -eux; \
 # ⚠️ 装完务必在镜像里自检：docker run --rm <镜像> python -m scripts.check_ocr
 ARG INSTALL_OCR=none
 RUN set -eux; \
+    if [ -n "$APT_MIRROR" ]; then \
+      for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
+        [ -f "$f" ] && sed -i "s|https\?://deb.debian.org|$APT_MIRROR|g" "$f"; \
+      done; \
+    fi; \
     case "$INSTALL_OCR" in \
       rapidocr) \
         apt-get update; \
@@ -89,6 +102,28 @@ RUN set -eux; \
         ;; \
     esac
 
+# ---- PDF 导出所需的 LibreOffice（可选能力，但本项目已默认启用）----
+# 路线：DOCX → LibreOffice CLI → PDF，能最大程度保留 Word 版式。
+# 中文字体不是可选项：缺字体时导出的 PDF 中文会变成方框。
+# 用 fonts-wqy-zenhei 而不是 fonts-noto-cjk：前者约 15MB、后者约 57MB，
+# 在部分网络环境下 57MB 的单个 deb 会长时间卡住；文泉驿对中文简历足够。
+# poppler-utils 仅用于运维自检（pdftotext 验证中文没丢），不参与业务。
+ARG INSTALL_PDF=1
+RUN set -eux; \
+    if [ -n "$APT_MIRROR" ]; then \
+      for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
+        [ -f "$f" ] && sed -i "s|https\?://deb.debian.org|$APT_MIRROR|g" "$f"; \
+      done; \
+    fi; \
+    if [ "$INSTALL_PDF" = "1" ]; then \
+      apt-get update; \
+      apt-get -o Acquire::http::Timeout=30 -o Acquire::Retries=3 install -y --no-install-recommends libreoffice-writer fonts-wqy-zenhei poppler-utils; \
+      rm -rf /var/lib/apt/lists/*; \
+      ls -l /usr/lib/libreoffice/program/soffice /usr/lib/libreoffice/program/soffice.bin; \
+    else \
+      echo "跳过 LibreOffice：PDF 导出会返回 503 PDF_UNAVAILABLE"; \
+    fi
+
 # ---- 运行期用户与数据目录（必须在 COPY 代码之前：见文件头第 3 条）----
 RUN set -eux; \
     groupadd --gid 10001 zhenresume; \
@@ -105,6 +140,10 @@ USER zhenresume
 VOLUME ["/app/data"]
 
 EXPOSE 8000
+
+# PDF 导出：config.pdf_enabled 要求两个路径都存在（安装层已校验过）
+ENV LIBREOFFICE_NODE=/usr/lib/libreoffice/program/soffice.bin \
+    LIBREOFFICE_CLI=/usr/lib/libreoffice/program/soffice
 
 # 启动钩子（app/main.py::lifespan）会自动建表 + 知识库为空则灌 16 篇种子文档，
 # 所以不需要额外的 entrypoint/迁移步骤。

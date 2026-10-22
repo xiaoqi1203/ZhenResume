@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import base64
+import os
 import re
 import subprocess
 import tempfile
@@ -99,6 +101,7 @@ def to_parsed_resume(content: EditorContent) -> ParsedResume:
         {
             "basics": {
                 "name": basics.name,
+                "target_title": basics.target_title,
                 "email": basics.email,
                 "phone": basics.phone,
                 "city": basics.city,
@@ -126,7 +129,7 @@ def from_parsed_resume(parsed: ParsedResume) -> EditorContent:
         {
             "basics": {
                 "name": parsed.basics.name,
-                "target_title": "",
+                "target_title": parsed.basics.target_title,
                 "phone": parsed.basics.phone,
                 "email": parsed.basics.email,
                 "city": parsed.basics.city,
@@ -366,9 +369,28 @@ def _style_run(run, size: float, *, bold: bool = False, color: str | None = None
     rfonts.set(qn("w:hAnsi"), font)
 
 
-def render_docx(content: EditorContent) -> bytes:
+def _avatar_stream(avatar: str):
+    """把 `data:image/...;base64,...` 解成字节流；任何异常都返回 None（导出不因头像失败）。"""
+    if not avatar or not avatar.startswith("data:") or "," not in avatar:
+        return None
+    header, _, payload = avatar.partition(",")
+    if "base64" not in header:
+        return None
+    try:
+        raw = base64.b64decode(payload, validate=False)
+    except Exception:  # noqa: BLE001
+        return None
+    if not raw or len(raw) > 2_000_000:
+        return None
+    import io
+
+    return io.BytesIO(raw)
+
+
+def render_docx(content: EditorContent, *, scale: float = 1.0) -> bytes:
     """生成 DOCX 字节流。
 
+    `scale` 用于「压缩到一页」：按比例缩小字号、行间距与页边距（1.0 = 原始版式）。
     版式刻意保持单栏纯段落 + 列表：没有表格、没有文本框、没有分栏。
     这样导出的简历能被 ATS 正确解析（对照知识库里的 ATS 说明）。
     """
@@ -378,17 +400,25 @@ def render_docx(content: EditorContent) -> bytes:
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.shared import Cm, Pt
 
+    def S(value: float) -> float:
+        """按缩放比例换算尺寸。"""
+        return round(value * scale, 2)
+
     document = Document()
 
     for section in document.sections:
-        section.top_margin = Cm(1.8)
-        section.bottom_margin = Cm(1.8)
-        section.left_margin = Cm(2.0)
-        section.right_margin = Cm(2.0)
+        # 页面尺寸必须显式设成 A4：python-docx 默认是 Letter（612×792pt），
+        # 中文简历按 A4 打印时会多出一截空白或被缩放。
+        section.page_width = Cm(21.0)
+        section.page_height = Cm(29.7)
+        section.top_margin = Cm(S(1.8))
+        section.bottom_margin = Cm(S(1.8))
+        section.left_margin = Cm(S(2.0))
+        section.right_margin = Cm(S(2.0))
 
     normal = document.styles["Normal"]
     normal.font.name = "微软雅黑"
-    normal.font.size = Pt(10.5)
+    normal.font.size = Pt(S(10.5))
     from docx.oxml.ns import qn
 
     normal.element.rPr.rFonts.set(qn("w:eastAsia"), "微软雅黑")
@@ -396,29 +426,29 @@ def render_docx(content: EditorContent) -> bytes:
     def para(text: str = "", *, size: float = 10.5, bold: bool = False, color: str | None = None,
              space_before: float = 0, space_after: float = 3, center: bool = False):
         p = document.add_paragraph()
-        p.paragraph_format.space_before = Pt(space_before)
-        p.paragraph_format.space_after = Pt(space_after)
+        p.paragraph_format.space_before = Pt(S(space_before))
+        p.paragraph_format.space_after = Pt(S(space_after))
         p.paragraph_format.line_spacing = 1.15
         if center:
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         if text:
-            _style_run(p.add_run(text), size, bold=bold, color=color)
+            _style_run(p.add_run(text), S(size), bold=bold, color=color)
         return p
 
     def bullet(text: str):
         p = document.add_paragraph()
         p.paragraph_format.space_before = Pt(0)
-        p.paragraph_format.space_after = Pt(2)
-        p.paragraph_format.left_indent = Cm(0.5)
-        p.paragraph_format.first_line_indent = Cm(-0.35)
-        _style_run(p.add_run(f"· {text}"), 10.5)
+        p.paragraph_format.space_after = Pt(S(2))
+        p.paragraph_format.left_indent = Cm(S(0.5))
+        p.paragraph_format.first_line_indent = Cm(S(-0.35))
+        _style_run(p.add_run(f"· {text}"), S(10.5))
         return p
 
     def section_heading(title: str):
         p = document.add_paragraph()
-        p.paragraph_format.space_before = Pt(12)
-        p.paragraph_format.space_after = Pt(5)
-        _style_run(p.add_run(title), 13, bold=True, color="1F2A44")
+        p.paragraph_format.space_before = Pt(S(12))
+        p.paragraph_format.space_after = Pt(S(5))
+        _style_run(p.add_run(title), S(13), bold=True, color="1F2A44")
         # ATS 常用「下边框」识别章节分隔，这里用段落底边线代替图形元素
         from docx.oxml import OxmlElement
 
@@ -433,6 +463,18 @@ def render_docx(content: EditorContent) -> bytes:
         ppr.append(borders)
 
     # --- 抬头 ---
+    # 头像：独立段落右对齐，不用表格/文本框包裹（那会让 ATS 解析失败）。
+    # 解码失败时静默跳过 —— 不能因为一张图让整份简历导不出来。
+    avatar_stream = _avatar_stream(content.basics.avatar)
+    if avatar_stream is not None:
+        try:
+            photo_para = document.add_paragraph()
+            photo_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            photo_para.paragraph_format.space_after = Pt(S(2))
+            photo_para.add_run().add_picture(avatar_stream, width=Cm(S(2.6)))
+        except Exception:  # noqa: BLE001
+            pass
+
     if content.basics.name.strip():
         para(content.basics.name.strip(), size=20, bold=True, space_after=4, center=False)
     contact = _contact_parts(content)
@@ -449,11 +491,11 @@ def render_docx(content: EditorContent) -> bytes:
             title = _entry_title(item.company, item.title)
             date = _date_range(item.start, item.end)
             p = document.add_paragraph()
-            p.paragraph_format.space_before = Pt(6)
-            p.paragraph_format.space_after = Pt(1)
-            _style_run(p.add_run(title), 11.5, bold=True)
+            p.paragraph_format.space_before = Pt(S(6))
+            p.paragraph_format.space_after = Pt(S(1))
+            _style_run(p.add_run(title), S(11.5), bold=True)
             if date:
-                _style_run(p.add_run(f"    {date}"), 10, color="555F73")
+                _style_run(p.add_run(f"    {date}"), S(10), color="555F73")
             if item.location.strip():
                 para(item.location.strip(), size=9.5, color="78829A", space_after=2)
             for h in item.highlights:
@@ -466,11 +508,11 @@ def render_docx(content: EditorContent) -> bytes:
             title = _entry_title(item.name, item.role)
             date = _date_range(item.start, item.end)
             p = document.add_paragraph()
-            p.paragraph_format.space_before = Pt(6)
-            p.paragraph_format.space_after = Pt(1)
-            _style_run(p.add_run(title), 11.5, bold=True)
+            p.paragraph_format.space_before = Pt(S(6))
+            p.paragraph_format.space_after = Pt(S(1))
+            _style_run(p.add_run(title), S(11.5), bold=True)
             if date:
-                _style_run(p.add_run(f"    {date}"), 10, color="555F73")
+                _style_run(p.add_run(f"    {date}"), S(10), color="555F73")
             tech = [t.strip() for t in item.tech if t.strip()]
             if tech:
                 para(f"技术栈：{'、'.join(tech)}", size=9.5, color="555F73", space_after=2)
@@ -482,12 +524,12 @@ def render_docx(content: EditorContent) -> bytes:
         section_heading(H_EDUCATION)
         for item in content.education:
             p = document.add_paragraph()
-            p.paragraph_format.space_before = Pt(4)
-            p.paragraph_format.space_after = Pt(1)
-            _style_run(p.add_run(_entry_title(item.school, item.degree, item.major)), 11)
+            p.paragraph_format.space_before = Pt(S(4))
+            p.paragraph_format.space_after = Pt(S(1))
+            _style_run(p.add_run(_entry_title(item.school, item.degree, item.major)), S(11))
             date = _date_range(item.start, item.end)
             if date:
-                _style_run(p.add_run(f"    {date}"), 10, color="555F73")
+                _style_run(p.add_run(f"    {date}"), S(10), color="555F73")
 
     def text_list(title: str, values: list[str]) -> None:
         cleaned = [v.strip() for v in values if v.strip()]
@@ -513,14 +555,15 @@ def render_docx(content: EditorContent) -> bytes:
     return buffer.getvalue()
 
 
-# --------------------------------------------------------------------------- #
-# 4) PDF（由 DOCX 转出，版式与 DOCX 完全一致）
-# --------------------------------------------------------------------------- #
 def docx_to_pdf(docx_bytes: bytes) -> bytes:
-    """调用外部 LibreOffice Kit 把 DOCX 转成 PDF。
+    """调用外部 LibreOffice 把 DOCX 转成 PDF。
 
     路径来自配置而非硬编码，未配置时抛 PdfUnavailable（503），
     由前端引导用户改用 DOCX 或浏览器打印 —— 宁可明确失败，也不要静默产出一个坏文件。
+
+    ⚠️ 这里用的是 LibreOffice 的**标准 CLI**（`--convert-to pdf --outdir`）。
+    之前的实现传的是 `convert --input x --output y`，那不是 soffice 的参数格式，
+    即使装了 LibreOffice 也会 returncode != 0（静默失败）。
     """
     if not settings.pdf_enabled:
         raise PdfUnavailable()
@@ -531,22 +574,34 @@ def docx_to_pdf(docx_bytes: bytes) -> bytes:
         pdf_path = tmp_dir / "resume.pdf"
         docx_path.write_bytes(docx_bytes)
 
+        # 独立的 UserInstallation：并发导出时避免共享 profile 的文件锁冲突
+        profile = tmp_dir / "lo-profile"
+        env = {
+            **os.environ,
+            "HOME": str(tmp_dir),
+            "TMPDIR": str(tmp_dir),
+        }
+        cli = settings.libreoffice_cli or settings.libreoffice_node
         try:
             proc = subprocess.run(
                 [
-                    settings.libreoffice_node,
-                    settings.libreoffice_cli,
-                    "convert",
-                    "--input",
+                    cli,
+                    f"-env:UserInstallation=file://{profile}",
+                    "--headless",
+                    "--norestore",
+                    "--nolockcheck",
+                    "--convert-to",
+                    "pdf",
+                    "--outdir",
+                    str(tmp_dir),
                     str(docx_path),
-                    "--output",
-                    str(pdf_path),
                 ],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
                 timeout=settings.pdf_timeout_s,
+                env=env,
             )
         except subprocess.TimeoutExpired as exc:
             raise PdfUnavailable(f"PDF 转换超时（>{settings.pdf_timeout_s:.0f} 秒），请改用 DOCX 导出。") from exc
@@ -558,6 +613,45 @@ def docx_to_pdf(docx_bytes: bytes) -> bytes:
             raise PdfUnavailable(f"PDF 转换失败：{detail or '未知错误'}")
 
         return pdf_path.read_bytes()
+
+
+# --------------------------------------------------------------------------- #
+# 5) 「压缩到一页」导出
+# --------------------------------------------------------------------------- #
+# 逐档缩小字号/间距/页边距并重新转 PDF，直到内容落进 1 页 A4。
+# 为什么用「反复转换」而不是估算高度：DOCX 的真实分页只有排版引擎说了算，
+# 估算出来的一页在 Word/LibreOffice 里经常溢出一行；这里以实际页数为准，宁可多转两次。
+FIT_SCALES = (1.0, 0.96, 0.92, 0.88, 0.84, 0.80, 0.76, 0.72, 0.68)
+
+
+def pdf_page_count(pdf_bytes: bytes) -> int:
+    """PDF 页数（pypdf 已是依赖，不额外引入）。"""
+    import io
+
+    from pypdf import PdfReader
+
+    try:
+        return len(PdfReader(io.BytesIO(pdf_bytes)).pages)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def render_pdf_one_page(content: EditorContent) -> tuple[bytes, float, int]:
+    """尽量把简历压到 1 页 A4。
+
+    返回 `(pdf_bytes, 实际使用的缩放比例, 页数)`。
+    即使所有档位都压不进 1 页，也返回最后一档（最小字号）的结果，由前端提示实际页数。
+    """
+    last_pdf = b""
+    last_scale = FIT_SCALES[-1]
+    last_pages = 0
+    for scale in FIT_SCALES:
+        pdf = docx_to_pdf(render_docx(content, scale=scale))
+        pages = pdf_page_count(pdf)
+        last_pdf, last_scale, last_pages = pdf, scale, pages
+        if pages <= 1:
+            break
+    return last_pdf, last_scale, last_pages
 
 
 # --------------------------------------------------------------------------- #

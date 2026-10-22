@@ -12,6 +12,18 @@
 
 from __future__ import annotations
 
+import copy
+
+
+# 版式元数据的取值域（与前端设计系统 / 渲染器约定一致）：
+#   style  —— 整体气质：minimal / business / fresh / creative
+#   layout —— 版面骨架：single（单栏）/ sidebar（侧边栏）
+#   design —— 具体设计主题：celadon / navy / ivory / cobalt / obsidian / moss / copper / indigo
+# 老简历只存了 template_code，打开时要靠这些字段还原样式，所以旧模板同样必须补齐。
+STYLES = ("minimal", "business", "fresh", "creative")
+LAYOUTS = ("single", "sidebar")
+DESIGNS = ("celadon", "navy", "ivory", "cobalt", "obsidian", "moss", "copper", "indigo")
+
 
 def _sec(
     key: str,
@@ -52,6 +64,13 @@ TEMPLATES: list[dict] = [
         "description": "适合有 2 年以上正式工作经验的社招投递，重心放在成果与量化",
         "target": "experienced",
         "role_family": "general",
+        # 旧模板：保留 code 供老简历回查，但不在画廊展示（visible=False）。
+        "style": "business",
+        "layout": "single",
+        "design": "ivory",
+        "accent": "#B08A63",
+        "tags": ["社招", "通用", "单栏"],
+        "visible": False,
         "intro": (
             "社招看的是「你解决过什么问题、拿到什么结果」。填写顺序建议："
             "先把最近两段工作经历写到有数字，再回头写个人优势与技能 —— "
@@ -114,6 +133,10 @@ TEMPLATES: list[dict] = [
                 "email": "wangqiang@example.com",
                 "city": "杭州",
                 "links": ["github.com/wangqiang"],
+                # avatar 必须显式给出：`EditorBasics` 有默认值 `""`，
+                # 序列化回显时会出现这个键 —— 模板缺了它，"回显内容 == 提交内容"
+                # 这条往返断言就永远不成立（契约 §2.3 要求 editor_content 原样回显）。
+                "avatar": "",
             },
             "summary": "6 年后端开发经验，专注高并发交易系统与微服务治理。主导过日均 500 万次调用的订单服务重构，P99 延迟下降 78%。",
             "work": [
@@ -172,6 +195,12 @@ TEMPLATES: list[dict] = [
         "description": "适合无正式工作经验的应届生，用实习、项目、竞赛与课程填补经历空白",
         "target": "campus",
         "role_family": "general",
+        "style": "fresh",
+        "layout": "single",
+        "design": "cobalt",
+        "accent": "#1F4E9C",
+        "tags": ["校招", "实习", "单栏"],
+        "visible": False,
         "intro": (
             "校招 HR 清楚你没有工作经历，他们看的是「学习能力与动手证据」。"
             "把教育经历提到最前，然后用实习、课程项目、竞赛、开源把版面填满 —— "
@@ -240,6 +269,7 @@ TEMPLATES: list[dict] = [
                 "email": "lina@example.com",
                 "city": "杭州",
                 "links": [],
+                "avatar": "",
             },
             "summary": "统计学本科，专业前 15%。在电商公司实习期间独立完成用户流失归因分析，输出的挽回策略使次月流失率下降 4.2 个百分点。",
             "work": [
@@ -289,6 +319,12 @@ TEMPLATES: list[dict] = [
         "description": "适合跨行业 / 跨岗位转行，把可迁移能力提到最前，并正面处理转行动机",
         "target": "transition",
         "role_family": "general",
+        "style": "business",
+        "layout": "single",
+        "design": "navy",
+        "accent": "#17324D",
+        "tags": ["转行", "通用", "单栏"],
+        "visible": False,
         "intro": (
             "转行最大的风险不是「没有相关经验」，而是 HR 看不出你已经为新岗位做过什么准备。"
             "因此这份模板把「技能」与「项目 / 作品」提到工作经历之前：先用自学成果与作品证明能力，"
@@ -358,6 +394,7 @@ TEMPLATES: list[dict] = [
                 "email": "zhaomin@example.com",
                 "city": "上海",
                 "links": [],
+                "avatar": "",
             },
             "summary": "5 年线下连锁零售经验，管理过 3 家门店、12 人团队。近 1 年系统自学用户运营与数据分析，独立搭建的会员分层方案使用户月复购率提升 18%。转行方向明确，希望把门店经营经验用于线上用户运营。",
             "work": [
@@ -407,6 +444,12 @@ TEMPLATES: list[dict] = [
         "description": "适合研发 / 算法 / 测试 / 运维等技术岗，技能前置、突出技术深度与开源",
         "target": "experienced",
         "role_family": "tech",
+        "style": "minimal",
+        "layout": "single",
+        "design": "celadon",
+        "accent": "#5D7F6B",
+        "tags": ["社招", "技术", "单栏"],
+        "visible": False,
         "intro": (
             "技术岗的简历要能扛住面试官的追问。写上去的每一项技术，都要能说清「用它解决了什么问题、"
             "遇到什么坑、怎么选的型」。因此这份模板把技能栏前置，并单独留出「开源与技术输出」区块 —— "
@@ -475,6 +518,7 @@ TEMPLATES: list[dict] = [
                 "email": "chenlei@example.com",
                 "city": "北京",
                 "links": ["github.com/chenlei"],
+                "avatar": "",
             },
             "summary": "7 年 Java 后端经验，专注高并发交易系统与稳定性建设。主导过支撑 8 万 QPS 峰值的大促保障方案，连续两年零故障。",
             "work": [
@@ -525,6 +569,147 @@ TEMPLATES: list[dict] = [
 TEMPLATE_MAP: dict[str, dict] = {t["code"]: t for t in TEMPLATES}
 
 
+# --------------------------------------------------------------------------- #
+# 第一批真实版式模板
+# --------------------------------------------------------------------------- #
+# 这 4 套与旧 4 套是「同一套写作方法论的不同版式」：内容骨架（sections /
+# writing_rules / example_content）直接 deepcopy 自对应 base，只覆盖面向用户的
+# 文案与版式元数据。这样写作提示只有一处维护点，改了 base 不会漏掉衍生模板。
+def _derive_template(
+    base_code: str,
+    *,
+    code: str,
+    name: str,
+    description: str,
+    intro: str,
+    style: str,
+    layout: str,
+    design: str,
+    accent: str,
+    tags: list[str],
+    target: str,
+    role_family: str,
+) -> dict:
+    """从基础模板派生一套画廊可见的新版式模板。"""
+    if style not in STYLES or layout not in LAYOUTS or design not in DESIGNS:
+        raise ValueError(f"非法的版式元数据：{code} style={style} layout={layout} design={design}")
+
+    template = copy.deepcopy(TEMPLATE_MAP[base_code])
+    template.update(
+        {
+            "code": code,
+            "name": name,
+            "description": description,
+            "intro": intro,
+            "target": target,
+            "role_family": role_family,
+            "style": style,
+            "layout": layout,
+            "design": design,
+            "accent": accent,
+            "tags": list(tags),
+            "visible": True,
+        }
+    )
+
+    # 契约 §2.3：example_content 必须原样回显。`EditorBasics.avatar` 有默认值 `""`，
+    # 序列化回显会带上这个键 —— 模板缺了它，"回显内容 == 提交内容" 的往返断言就
+    # 永远不成立。旧模板都显式带了这个键，这里再做一次兜底（deepcopy 会一并带过来）。
+    example = template.get("example_content") or {}
+    basics = example.get("basics") or {}
+    if "avatar" not in basics:
+        basics["avatar"] = ""
+        example["basics"] = basics
+        template["example_content"] = example
+
+    return template
+
+
+VISIBLE_TEMPLATES: list[dict] = [
+    _derive_template(
+        "tech_engineer",
+        code="celadon_line",
+        name="青简细线",
+        description="细线单栏版式：技能前置、留白克制，适合社招研发 / 算法 / 测试 / 运维投递",
+        intro=(
+            "青灰细线纵贯全页，没有色块也没有多余的装饰，整份简历像一份装订干净的实验记录。"
+            "技术岗的成果本来就足够密，这套版式只负责让视线顺着细线一路落到你的指标上。"
+        ),
+        style="minimal",
+        layout="single",
+        design="celadon",
+        accent="#5D7F6B",
+        tags=["社招", "技术", "单栏"],
+        target="experienced",
+        role_family="tech",
+    ),
+    _derive_template(
+        "general_experienced",
+        code="navy_chapter",
+        name="深蓝序章",
+        description="深蓝单栏版式：突出商业判断与协作边界，适合社招产品 / 项目岗投递",
+        intro=(
+            "深蓝色的标题像章节起首，把每一段经历压成一页可读的章节。"
+            "产品与项目岗需要让面试官看清背景、判断与结果之间的因果，这套版式把节奏留给段落之间的呼吸。"
+        ),
+        style="business",
+        layout="single",
+        design="navy",
+        accent="#17324D",
+        tags=["社招", "产品", "单栏"],
+        target="experienced",
+        role_family="general",
+    ),
+    _derive_template(
+        "campus_fresh",
+        code="ivory_page",
+        name="象牙书页",
+        description="象牙单栏版式：版面舒展、轻装上阵，适合校招 / 实习投递",
+        intro=(
+            "象牙底色衬着细衬线的标题，翻开像一页校园手账。"
+            "实习、课程与竞赛本就零散，这套版式用充足的留白把它们收拢成从容的一页，不让任何一段积累显得单薄。"
+        ),
+        style="fresh",
+        layout="single",
+        design="ivory",
+        accent="#B08A63",
+        tags=["校招", "实习", "单栏"],
+        target="campus",
+        role_family="general",
+    ),
+    _derive_template(
+        "career_switch",
+        code="cobalt_sail",
+        name="钴蓝横帆",
+        description="钴蓝单栏版式：用横向节奏理清转行叙事，适合跨行业 / 跨岗位转行",
+        intro=(
+            "钴蓝横线贯穿整页，像一张被风撑满的帆。"
+            "转行简历最怕叙事散乱，这套版式用同一条横线把「旧行业积累 → 新岗位证据 → 转行动机」串成一条看得懂的航线。"
+        ),
+        style="business",
+        layout="single",
+        design="cobalt",
+        accent="#1F4E9C",
+        tags=["社招", "运营", "单栏"],
+        target="transition",
+        role_family="general",
+    ),
+]
+
+TEMPLATES.extend(VISIBLE_TEMPLATES)
+TEMPLATE_MAP.update({t["code"]: t for t in VISIBLE_TEMPLATES})
+
+
+def visible_templates() -> list[dict]:
+    """画廊展示的模板。
+
+    旧 4 套（general_experienced / campus_fresh / career_switch / tech_engineer）
+    `visible=False`：仍然保留在 `TEMPLATE_MAP` 里，老简历按 code 打开时样式不丢，
+    但不再出现在列表接口中。
+    """
+    return [t for t in TEMPLATES if t.get("visible")]
+
+
 def get_template(code: str) -> dict | None:
     return TEMPLATE_MAP.get(code)
 
@@ -538,6 +723,11 @@ def summarize(template: dict) -> dict:
         "target": template["target"],
         "role_family": template["role_family"],
         "section_count": len(template["sections"]),
+        "style": template["style"],
+        "layout": template["layout"],
+        "design": template["design"],
+        "accent": template["accent"],
+        "tags": list(template["tags"]),
     }
 
 

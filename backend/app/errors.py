@@ -93,6 +93,40 @@ class PdfUnavailable(AppError):
     )
 
 
+# --------------------------------------------------------------------------- #
+# 账号与鉴权
+# --------------------------------------------------------------------------- #
+class Unauthorized(AppError):
+    """401：没登录 / token 失效 / 验证码不对。前端拿到 code 后决定是否跳登录页。"""
+
+    status_code = 401
+    code = "UNAUTHORIZED"
+    message = "请先登录"
+
+
+class Forbidden(AppError):
+    """403：已登录但没有权限（例如非管理员访问管理后台）。"""
+
+    status_code = 403
+    code = "FORBIDDEN"
+    message = "没有权限执行该操作"
+
+
+class Conflict(AppError):
+    """409：唯一约束冲突（邮箱 / 手机号已被占用）。"""
+
+    status_code = 409
+    code = "CONFLICT"
+    message = "该资源已存在"
+
+
+class TooManyRequests(AppError):
+    """429：发送验证码过于频繁 / 超出每日上限。"""
+
+    status_code = 429
+    code = "TOO_MANY_REQUESTS"
+    message = "操作过于频繁，请稍后再试"
+
 class QuotaExceeded(AppError):
     status_code = 402
     code = "QUOTA_EXCEEDED"

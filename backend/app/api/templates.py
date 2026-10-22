@@ -12,7 +12,8 @@ router = APIRouter(prefix="/templates", tags=["templates"])
 
 @router.get("")
 def list_templates() -> dict:
-    return {"items": [resume_templates.summarize(t) for t in resume_templates.TEMPLATES]}
+    # 只返回画廊可见模板；旧 4 套仍可按 code 查详情（老简历打开时依赖）。
+    return {"items": [resume_templates.summarize(t) for t in resume_templates.visible_templates()]}
 
 
 @router.get("/{code}")

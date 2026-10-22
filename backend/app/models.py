@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     ForeignKey,
     Integer,
@@ -59,9 +60,14 @@ class User(Base):
     # jobseeker / hr / admin
     role: Mapped[str] = mapped_column(String(20), default="jobseeker")
     org_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("organizations.id"))
-    # [扩展] MVP 未接入 Clerk/Supabase Auth，先用匿名设备标识做用户隔离
+    # 匿名设备标识：账号体系上线前用它做隔离；账号绑定后仍然保留，
+    # 用于「同一个浏览器登录前后」的数据延续（见 api/deps.py 的鉴权双通道）。
     device_id: Mapped[str | None] = mapped_column(String(64), index=True)
     free_quota_used: Mapped[int] = mapped_column(Integer, default=0)
+    # [扩展] 账号体系：邮箱/密码是否由「手机验证码首次登录」自动生成（占位乱码）
+    auto_created: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # [扩展] 会话版本号：改密 / 强制下线时 +1，旧 JWT 立即失效
+    token_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
@@ -146,6 +152,8 @@ class AnalysisTask(Base):
     jd_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("job_descriptions.id", ondelete="CASCADE"))
     # single / batch
     type: Mapped[str] = mapped_column(String(20), default="single")
+    # fixed / agentic —— 单份诊断的分析模式（用户可在提交时切换）
+    mode: Mapped[str] = mapped_column(String(20), default="fixed")
     # pending / running / done / failed
     status: Mapped[str] = mapped_column(String(20), default="pending")
     # [扩展] 工作流进度与失败原因，供 4.2 轮询接口使用
@@ -211,6 +219,30 @@ class ReportFinding(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     report: Mapped[AnalysisReport | None] = relationship(back_populates="findings")
+
+
+class ReportShare(Base):
+    """报告的分享令牌（只存 token 的 SHA-256，不存明文）。
+
+    为什么要单独一张表而不是把 token 写进报告：
+    - 可撤销（`revoked_at`）与可过期（`expires_at`）；
+    - 一个报告可以有多条历史分享记录，便于审计访问次数；
+    - 泄露库文件也拿不到可用的 token（只存 hash）。
+    """
+
+    __tablename__ = "report_shares"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    report_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("analysis_reports.id", ondelete="CASCADE")
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    # 是否包含简历原文引用（默认不包含；用户勾选后才写入）
+    include_raw: Mapped[bool] = mapped_column(Boolean, default=False)
+    view_count: Mapped[int] = mapped_column(Integer, default=0)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
 class WorkflowStep(Base):
@@ -377,3 +409,37 @@ class PromptTemplate(Base):
     version: Mapped[int] = mapped_column(Integer, default=1)
     content: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, server_default=func.now())
+
+# --------------------------------------------------------------------------- #
+# [扩展] 账号体系：短信验证码（登录 / 注册 / 改密）
+# --------------------------------------------------------------------------- #
+class SmsCode(Base):
+    """只存验证码的 sha256 摘要，绑定「手机号 + 用途」。
+
+    为什么落库而不是放内存：多 worker / 重启后仍有效，且能直接查最近一条做
+    60 秒重发限制与每日上限，不需要额外引入 Redis。
+    """
+
+    __tablename__ = "sms_codes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    phone: Mapped[str] = mapped_column(String(32), index=True)
+    # login / register / reset
+    purpose: Mapped[str] = mapped_column(String(20), default="login", index=True)
+    code_hash: Mapped[str] = mapped_column(String(64))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
+
+
+# --------------------------------------------------------------------------- #
+# [扩展] 会话黑名单：登出 / 改密后按 jti 失效单个 token
+# --------------------------------------------------------------------------- #
+class RevokedToken(Base):
+    __tablename__ = "revoked_tokens"
+
+    jti: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

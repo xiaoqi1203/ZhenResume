@@ -30,6 +30,20 @@ def _lock_for(task_id: str) -> asyncio.Lock:
     return lock
 
 
+# 调用方常用的"语义参数名" → 真实列名。
+#
+# 为什么需要这张表（实测 bug）：`record_step` 直接用 `setattr(row, key, value)` 写库，
+# 而调用方传的是 `input_digest=` / `output_digest=` —— 这两个都不是 `WorkflowStep` 的列。
+# SQLAlchemy 对未知属性只会**给 Python 对象挂个游离属性**，既不报错也不落库，
+# 于是 `workflow_steps.input_json/output_json` **永远是 NULL**。
+# 影响：看板上"每步输入输出摘要"一直为空；agent 线的工具轨迹也存不下来，
+# 无法证明"这个节点真的调了工具"。
+_FIELD_ALIASES: dict[str, str] = {
+    "input_digest": "input_json",
+    "output_digest": "output_json",
+}
+
+
 async def record_step(task_id: str, step_name: str, **fields) -> None:
     """按 (task_id, step_name) upsert 一行，并推进 progress。"""
     async with _lock_for(task_id):
@@ -47,8 +61,13 @@ def _record_step_sync(task_id: str, step_name: str, fields: dict) -> None:
             row = WorkflowStep(task_id=task_id, step_name=step_name, status="running")
             db.add(row)
         for key, value in fields.items():
-            if value is not None:
-                setattr(row, key, value)
+            if value is None:
+                continue
+            column = _FIELD_ALIASES.get(key, key)
+            # 只写真实列：写不存在的属性等于静默丢弃，宁可在这里显式忽略未知键
+            if not hasattr(type(row), column):
+                continue
+            setattr(row, column, value)
         db.flush()
         _advance_progress(db, task_id)
 

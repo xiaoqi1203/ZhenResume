@@ -23,7 +23,12 @@ EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 PHONE_RE = re.compile(r"(?<!\d)(1[3-9]\d{9}|1[3-9]\d[-\s]?\d{4}[-\s]?\d{4})(?!\d)")
 NAME_RE = re.compile(r"^[\u4e00-\u9fff]{2,4}$")
 DATE_TOKEN = r"(?:\d{4}\s*[年./\-]\s*\d{1,2}\s*月?|\d{4}\s*[年./\-]?|至今|现在|今|present|Present|PRESENT)"
-DATE_RANGE_RE = re.compile(rf"({DATE_TOKEN})\s*[-~—–－至到]+\s*({DATE_TOKEN})")
+# 日期区间的连接符 —— **必须收录 U+301C WAVE DASH「〜」**。
+# 实测：一份 PDF 简历日期写作 `2023-09 〜  至今`，U+301C 不在字符类里 → 整行不被识别为
+# 日期区间 → 该行被 `_looks_like_entry_header` 当成普通正文 → 教育经历起止时间丢失、
+# 项目名被解析成 `〜`。这不是"排版不规范"，是抽取器把 `~` 映射成了日文波浪线。
+DATE_SEP = "\\-~—–－〜～~至到到"
+DATE_RANGE_RE = re.compile(rf"({DATE_TOKEN})\s*[{DATE_SEP}]+\s*({DATE_TOKEN})")
 SINGLE_DATE_RE = re.compile(rf"({DATE_TOKEN})")
 BULLET_RE = re.compile(r"^[\s\-–—•·*※▶▪◦○●◆■□→>\uf000-\uf0ff\u25cf\u25a0\u25aa\u2022\u2043\u2219]+")
 CJK_CITY = [
@@ -107,12 +112,61 @@ def _split_header_and_dates(line: str) -> tuple[str, str, str]:
     match = DATE_RANGE_RE.search(line)
     if match:
         header = (line[: match.start()] + " " + line[match.end() :]).strip()
-        return header, match.group(1).strip(), match.group(2).strip()
+        return _strip_residual_sep(header), match.group(1).strip(), match.group(2).strip()
     match = SINGLE_DATE_RE.search(line)
     if match:
         header = (line[: match.start()] + " " + line[match.end() :]).strip()
-        return header, match.group(1).strip(), ""
-    return line.strip(), "", ""
+        return _strip_residual_sep(header), match.group(1).strip(), ""
+    return _strip_residual_sep(line), "", ""
+
+
+def _split_project_header(header: str) -> tuple[str, str]:
+    """把项目条目头拆成 (项目名, 角色)。
+
+    与 `_split_org_title` 的差别（都是实测踩出来的）：
+    - 项目名通常**没有分隔符**，用单空格写成 `网购交易平台 全栈开发`。
+      `_split_org_title` 按"两个以上空格"切分，遇到这种写法会整行当项目名
+      （`name='网购交易平台 全栈开发'`，role 为空）；
+    - 但项目名本身允许含空格（`校园二手交易平台 后端`、`xxx 管理系统`），
+      所以不能无条件按第一个空格切。
+
+    判据：**最后一个空格之后的那段像不像"角色/职责"**（2–8 字、纯中文、
+    且命中角色词）。像就切开，不像就整行当项目名 —— 宁可 role 为空，
+    也不要把项目名切坏（项目名会进报告的标题与 HTML 导出）。
+    """
+    header = _strip_residual_sep(header)
+    if not header:
+        return "", ""
+
+    header = re.sub(r"[|｜/／·・]+", "\t", header).strip()
+    parts = [p.strip() for p in re.split(r"\t|\s{2,}", header) if p.strip()]
+    if len(parts) >= 2:
+        return parts[0], parts[1]
+
+    # 单空格写法：`网购交易平台 全栈开发`
+    if " " in header:
+        head, _, tail = header.rpartition(" ")
+        if head.strip() and _looks_like_project_role(tail.strip()):
+            return head.strip(), tail.strip()
+
+    return header, ""
+
+
+# 项目角色词：全栈开发 / 后端 / 前端 / 独立开发 / 负责人 …
+_PROJECT_ROLE_RE = re.compile(
+    r"^(全栈|前端|后端|服务端|客户端|移动端|测试|运维|算法|数据|产品|设计|独立|主导|负责)?"
+    r"(开发|工程师|负责人|成员|实习生|架构|设计|维护|同学|个人项目|团队项目)"
+    r"(工程师|开发|人员|实习生)?$"
+)
+
+
+def _looks_like_project_role(text: str) -> bool:
+    """判断一段短文本是否像"我在这个项目里的角色"。"""
+    if not text or len(text) > 10:
+        return False
+    if not re.fullmatch(r"[\u4e00-\u9fff、/]{2,10}", text):
+        return False
+    return bool(_PROJECT_ROLE_RE.match(text))
 
 
 def _split_org_title(header: str) -> tuple[str, str]:
@@ -132,13 +186,41 @@ def _split_org_title(header: str) -> tuple[str, str]:
     return only, ""
 
 
+# 剥离日期后残留的纯符号（`〜`、`~`、`-` 等）。它们不是标题，留着会变成项目名。
+_RESIDUAL_SEP_RE = re.compile(r"^[\s\-\-—–－〜～~|｜/／·・、,，]+$")
+
+
+def _strip_residual_sep(text: str) -> str:
+    """去掉首尾的连接符/空白，纯符号串直接变成空串。
+
+    实测场景：`2023-09 〜  至今 东北石油大学 软件工程 (本科)` 在日期被剥离后，
+    如果 `〜` 没进 DATE_RANGE_RE 的连接符集，标题会剩成 `〜 东北石油大学 …`；
+    即使修好了正则，也可能残留 `〜` 之类符号 —— 所以这里统一清一遍。
+    """
+    cleaned = (text or "").strip()
+    if not cleaned or _RESIDUAL_SEP_RE.match(cleaned):
+        return ""
+    cleaned = re.sub(r"^[\s\-\-—–－〜～~|｜/／·・]+\s*", "", cleaned)
+    return re.sub(r"\s*[\s\-\-—–－〜～~|｜/／·・]+$", "", cleaned).strip()
+
+
 def extract_skills(section_lines: list[str]) -> list[str]:
     """从技能栏文本抽取技能列表。
 
     两步走，避免把多词技术名拆碎：
     1. 先按 TECH_DICT 抽已知技术名，长词优先（保证得到 "Spring Cloud" 而不是 "Spring"+"Cloud"；
        同时 "MySQL" 命中后 "SQL" 不再单独入列）；
-    2. 其余内容按分隔符切分，剔除已被第 1 步长词覆盖的碎片，保留「微服务」「高并发」这类非词表技能。
+    2. 其余内容按分隔符切分，保留「微服务」「高并发」这类非词表技能 ——
+       但**必须剔除整句碎片**。
+
+    ⚠️ 第 2 步的过滤是修 bug 加的（实测代价很大）：简历里常见的分行写法
+    `1. 编程语言：熟练掌握 Java，了解 Python`，不做过滤会产出
+    `['编程语⾔：熟练掌握', '了解', '基础语法', '进⾏接⼝开发', '缓存穿透防', ...]`。
+    这些不是技能，后果有三：
+    - 技能数虚高到 40（`min(len(skills), 15)` 之类的展示被垃圾占满）；
+    - 「技能 ↔ 项目」一致性检查永远误报（碎片不可能等于 `Vue`）；
+    - 前端把它当技能标签渲染，用户第一眼就看到自己的简历被解析成一堆病句。
+    所以：含冒号/括号说明的、以动词开头或结尾的、纯泛称的，一律不进技能列表。
     """
     text = "\n".join(_clean(line) for line in section_lines if _clean(line))
     if not text:
@@ -159,7 +241,9 @@ def extract_skills(section_lines: list[str]) -> list[str]:
     extras: list[str] = []
     for token in re.split(r"[、,，;；/|｜·\s]+", text):
         token = token.strip("：:。.（）()")
-        if not (1 < len(token) <= 24):
+        if not (2 < len(token) <= 16):
+            continue
+        if not _looks_like_skill_name(token):
             continue
         low = token.lower()
         if any(low in existing.lower() for existing in canonical):
@@ -167,6 +251,119 @@ def extract_skills(section_lines: list[str]) -> list[str]:
         extras.append(token)
 
     return list(dict.fromkeys(canonical + extras))[:40]
+
+
+# 技能名里**不该出现**的东西：说明性标点、量词/泛称、动词短语
+_SKILL_STOP_RE = re.compile(
+    r"[:：（(]|等|熟悉|熟练|了解|掌握|擅长|精通|使用|了解过|基础语法|相关|下列|如下"
+)
+_SKILL_VERB_PREFIX_RE = re.compile(r"^(熟练|熟悉|了解|掌握|擅长|精通|能够|可以|使用|基于|能|会|进行|实现|具备)")
+_SKILL_PROSE_SUFFIX_RE = re.compile(r"(开发|实现|进行|操作|运用|掌握|熟练|了解|熟悉|能力|原理|用法|机制|注解|模型)$")
+# 纯泛称：不是技术，也不能算技能条目
+_SKILL_GENERIC = {
+    "编程语言", "后端框架", "前端框架", "数据存储", "认证与权限", "工具与协作", "其他技术",
+    "技能", "专业技能", "技能特长", "语言", "框架", "工具", "数据库", "缓存", "中间件",
+}
+# 行首编号：`1.` / `1、` / `1)` / `（1）` / `①`
+_ENUM_PREFIX_RE = re.compile(r"^\s*(?:[（(]?\d{1,2}[)）.、．]|[①-⑳])\s*")
+
+# 「分组式技能行」的判据：出现冒号，说明是 `编程语言：熟练掌握 Java…` 这种句式。
+# 这类行里**只有技术名词值得收**，其余都是表述性文字（前面 `_SKILL_*` 过滤器拦不住
+# 被空格切碎的半句，例如 `编程工具辅助代码编写`、`逻辑调`、`提升开发效率`）。
+_GROUPED_SKILL_LINE_RE = re.compile(r"[:：]")
+
+
+def extract_skills(section_lines: list[str]) -> list[str]:
+    """从技能栏文本抽取技能列表。
+
+    **分两种书写风格处理**（这是修 bug 的核心，实测代价很大）：
+
+    ① **分组式**：`编程语言：熟练掌握 Java，了解 Python 基础语法；`
+       只收 `TECH_DICT` 命中的技术名（+ 少量能力词白名单）。
+       为什么不能顺带收切分片段：`1. 编程语言：熟练掌握 Java，了解 Python 基础语法`
+       按空格切开后是 `编程语言：熟练掌握` / `Java，了解` / `Python` / `基础语法；`，
+       过滤后仍会漏进 `基础语法` 这类半句。只收词表命中是最干净的解法。
+
+    ② **清单式**：`Java、Go、Spring Boot、MySQL、Redis、Kafka`
+       没有冒号，整行就是逗号/顿号分隔的清单，可以放心按分隔符切。
+
+    两种风格都先按 `TECH_DICT` 长词优先抽（保证 `Spring Cloud` 不被拆成 `Spring`+`Cloud`，
+    `MySQL` 命中后 `SQL` 不入列），再决定要不要收非词表片段。
+    """
+    cleaned_lines = [l for l in (_clean(_ENUM_PREFIX_RE.sub("", line)) for line in section_lines) if l]
+    if not cleaned_lines:
+        return []
+    text = "\n".join(cleaned_lines)
+
+    matched = sorted(
+        (t for t in TECH_DICT if re.search(re.escape(t), text, re.IGNORECASE)),
+        key=len,
+        reverse=True,
+    )
+    canonical: list[str] = []
+    for tech in matched:
+        low = tech.lower()
+        if any(low in existing.lower() for existing in canonical):
+            continue
+        canonical.append(tech)
+
+    extras: list[str] = []
+    grouped_lines = [l for l in cleaned_lines if _GROUPED_SKILL_LINE_RE.search(l)]
+    list_lines = [l for l in cleaned_lines if not _GROUPED_SKILL_LINE_RE.search(l)]
+
+    # ① 分组式行：只收能力词白名单（`微服务`/`高并发` 这类不在 TECH_DICT 但确属技能的词）
+    grouped_text = "\n".join(grouped_lines)
+    for word in _CAPABILITY_WORDS:
+        if word in grouped_text and word not in canonical and word not in extras:
+            extras.append(word)
+
+    # ② 清单式行：按分隔符切分，逐项过滤碎片
+    for token in re.split(r"[、,，;；/|｜·\s]+", "\n".join(list_lines)):
+        token = token.strip("：:。.（）()")
+        if not (2 < len(token) <= 16):
+            continue
+        if not _looks_like_skill_name(token):
+            continue
+        low = token.lower()
+        if any(low in existing.lower() for existing in canonical):
+            continue
+        if token in extras:
+            continue
+        extras.append(token)
+
+    return list(dict.fromkeys(canonical + extras))[:40]
+
+
+# 不在 TECH_DICT 里、但确实该算技能的「能力词」（分组式技能栏里非常常见）
+_CAPABILITY_WORDS = [
+    "微服务", "分布式", "高并发", "高可用", "性能优化", "并发编程", "领域驱动设计",
+    "数据结构", "算法", "设计模式", "单元测试", "自动化测试", "容器化", "服务治理",
+    "消息队列", "负载均衡", "分布式事务", "链路追踪", "监控告警", "CI/CD",
+]
+
+
+def _looks_like_skill_name(token: str) -> bool:
+    """判断一个切分片段是否像"技术名/能力名"，而不是整句被切下来的碎片。
+
+    判定顺序（任一命中即判否）：
+    1. 纯泛称或分组标题（`编程语言`、`数据存储`）；
+    2. 含冒号/括号（`编程语言：熟练掌握`）；
+    3. 以动词开头或结尾（`了解`、`进行接口开发`）；
+    4. 含"等/相关/如下"这类说明性词。
+    """
+    token = (token or "").strip()
+    if not token:
+        return False
+    if token in _SKILL_GENERIC:
+        return False
+    if _SKILL_STOP_RE.search(token):
+        return False
+    if _SKILL_VERB_PREFIX_RE.match(token):
+        return False
+    if _SKILL_PROSE_SUFFIX_RE.search(token):
+        return False
+    return True
+
 
 
 def _looks_like_entry_header(raw_line: str) -> bool:
@@ -232,18 +429,113 @@ def _iter_entries(lines: list[str]) -> list[dict]:
 # --------------------------------------------------------------------------- #
 # 简历解析
 # --------------------------------------------------------------------------- #
+_LABEL_LINE_RE = re.compile(r"^(?P<label>[^｜|]{2,10})\s*[｜|]\s*(?P<value>.+)$")
+_BASIC_LABELS = (
+    "姓名",
+    "名字",
+    "目标岗位",
+    "求职意向",
+    "应聘岗位",
+    "意向岗位",
+    "手机",
+    "电话",
+    "手机号",
+    "邮箱",
+    "邮箱地址",
+    "城市",
+    "所在城市",
+    "现居城市",
+)
+
+
+def _merge_wrapped_lines(lines: list[str]) -> list[str]:
+    """合并被 PDF 换行拆断的同一逻辑行。
+
+    表格里内容列较窄时，`某公司 | 职位 |` 与 `2021.03 - 2024.08` 会分成两行，
+    解析器会把日期当成新一段经历的标题，于是同一条经历被拆成两条。
+    """
+    merged: list[str] = []
+    for line in lines:
+        # `-`／`~` 结尾通常是日期范围被拆断（`2020.07 -` + `2024.03`）
+        if merged and merged[-1].rstrip().endswith(
+            ("|", "｜", "、", "，", ",", "；", ";", "-", "–", "—", "~")
+        ):
+            merged[-1] = merged[-1].rstrip() + " " + line.strip()
+        else:
+            merged.append(line)
+    return merged
+
+
+def _split_glued_heading(line: str) -> tuple[str, str] | None:
+    """`专业技能Java、SpringBoot` → ("专业技能", "Java、SpringBoot")。
+
+    PDF 里标签与内容的列间隔很小时重建不出竖线，两者会直接粘在一起。
+    """
+    stripped = line.strip()
+    candidates: list[tuple[str, str]] = []
+    for keywords in SECTION_KEYWORDS.values():
+        for keyword in keywords:
+            if stripped.startswith(keyword) and len(stripped) > len(keyword) + 1:
+                rest = stripped[len(keyword) :].lstrip("：: ｜|，,")
+                if len(rest) >= 2:
+                    candidates.append((keyword, rest))
+    if not candidates:
+        return None
+    # 长关键词优先：`专业技能` 先于 `技能`
+    return max(candidates, key=lambda item: len(item[0]))
+
+
+def _normalize_label_lines(text: str) -> str:
+    """把「标签 ｜ 内容」的表格行改写成解析器认得的格式。
+
+    表格类简历（左列标签 / 右列内容）导出的 PDF，标签与内容在同一行用竖线分隔：
+        `工作经历 ｜ 某科技 | 后端开发 | 2021.03 - 2024.08`
+        `姓名 ｜ 李四`
+    章节切分器只认「独立成行的标题」，这些行会让整份简历滞留在 preamble、
+    导致所有字段为空。这里做三件事：
+      1. 合并被换行拆断的行；
+      2. `标签 ｜ 内容` → 标题行 + 内容行（章节类）或 `标签：内容`（基本信息类）；
+      3. `标签内容` 粘连（列间隔太小、重建不出竖线）→ 同样拆开。
+    """
+    lines = _merge_wrapped_lines((text or "").splitlines())
+
+    out: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        match = _LABEL_LINE_RE.match(stripped)
+        if match:
+            label = match.group("label").strip()
+            value = match.group("value").strip()
+            if is_section_heading(label):
+                out.append(label)
+                out.append(value)
+                continue
+            if any(label == basic or label.startswith(basic) for basic in _BASIC_LABELS):
+                out.append(f"{label}：{value}")
+                continue
+
+        glued = _split_glued_heading(stripped)
+        if glued is not None:
+            out.append(glued[0])
+            out.append(glued[1])
+            continue
+
+        out.append(line)
+    return "\n".join(out)
+
+
 def parse_resume_text(text: str) -> ParsedResume:
     """先累积普通 dict/list，最后一次性 model_validate。
 
     不要往 ParsedResume 的列表里直接 append(dict) —— pydantic 不会校验 append 进去的元素，
     后续代码会拿到 dict 而不是模型实例（曾经在这里踩过 AttributeError）。
     """
-    text = text or ""
+    text = _normalize_label_lines(text or "")
     sections = split_sections(text)
     head_lines = [l for l in sections.get("preamble", []) if l.strip()]
     basics_block = [l for l in sections.get("basics", []) if l.strip()]
 
-    basics: dict = {"name": "", "email": "", "phone": "", "city": "", "links": []}
+    basics: dict = {"name": "", "target_title": "", "email": "", "phone": "", "city": "", "links": []}
     education: list[dict] = []
     work: list[dict] = []
     projects: list[dict] = []
@@ -277,6 +569,38 @@ def parse_resume_text(text: str) -> ParsedResume:
                 break
     basics["links"] = re.findall(r"(?:https?://|github\.com/|gitee\.com/|www\.)[^\s，。；、]+", text)[:5]
 
+    # --- 目标岗位 ---
+    # 优先显式标签（「目标岗位：后端开发工程师」）；
+    # 否则从**联系方式行**里取首段：我们自己导出的简历会把「岗位 ｜ 手机 ｜ 邮箱 ｜ 城市 ｜ 链接」
+    # 放在同一行，首段就是目标岗位 —— 之前这一行只解析了手机/邮箱/城市，岗位名因此丢失。
+    explicit_title = re.search(
+        r"(?:目标岗位|求职意向|应聘岗位|意向岗位)[:：]\s*([^\n，。；|｜]{2,30})", text
+    )
+    if explicit_title:
+        basics["target_title"] = explicit_title.group(1).strip()
+    else:
+        for line in candidate_lines:
+            cleaned = _clean(line)
+            if not re.search(r"[|｜]", cleaned):
+                continue
+            if not (EMAIL_RE.search(cleaned) or PHONE_RE.search(cleaned)):
+                continue
+            for part in re.split(r"[|｜]", cleaned):
+                seg = part.strip()
+                if not seg or len(seg) > 24:
+                    continue
+                if EMAIL_RE.search(seg) or PHONE_RE.search(seg):
+                    continue
+                if any(city in seg for city in CJK_CITY):
+                    continue
+                if seg == basics.get("name") or re.search(r"\d", seg):
+                    continue
+                basics["target_title"] = seg
+                break
+            if basics["target_title"]:
+                break
+
+
     # --- 工作经历 ---
     for entry in _iter_entries(sections.get("work", [])):
         company, title = _split_org_title(entry["header"])
@@ -293,7 +617,7 @@ def parse_resume_text(text: str) -> ParsedResume:
 
     # --- 项目经历 ---
     for entry in _iter_entries(sections.get("projects", [])):
-        name, role = _split_org_title(entry["header"])
+        name, role = _split_project_header(entry["header"])
         # 只认已知技术词表里的名词。
         # 早期版本用「任意英文单词」抽取，结果把 MTTR / QPS / ROI 这类指标当成技术栈，
         # 进而误报「项目里用到的技术在技能栏没有列出」。宁少不滥。
@@ -367,8 +691,10 @@ def parse_resume_text(text: str) -> ParsedResume:
     return ParsedResume.model_validate(
         {
             "basics": basics,
-            "education": education,
-            "work": work,
+            # 丢掉「只有日期、没有学校」的残行：表格简历里日期常被换行拆到下一行，
+            # 不清理会多出一条空教育经历（报告里会显示成一条填空）。
+            "education": [item for item in education if (item.get("school") or "").strip()],
+            "work": [item for item in work if (item.get("company") or "").strip()],
             "projects": projects,
             "skills": skills,
             "certificates": certificates,
@@ -419,6 +745,103 @@ def _lines_under(lines: list[str], headings: list[str], stop_headings: list[str]
         if capturing and stripped:
             collected.append(stripped)
     return collected
+
+
+
+# --------------------------------------------------------------------------- #
+# JD 中的「择一」关系（或 / 等其中一门 / 之一 / 任一 …）
+# --------------------------------------------------------------------------- #
+# 实测踩过的两类误报：
+#   A. JD 写「熟悉 Java 或 Go」，简历只有 Java → 报「缺少 Go」
+#   B. JD 写「熟练掌握 C/C++/Java/Go 等其中一门开发语言」，简历有 Java → 仍报「缺少 Go」
+# 这两种都是**择一要求**，命中任意一项即满足。
+#
+# 识别策略：
+#   1) 显式「或 / 或者」：按分隔符切分，两侧各取一个技术词；
+#   2) 择一提示词（其中一门 / 之一 / 任一 / 至少一种 / 任选 …）：
+#      取该**分句**内出现的全部技术词作为一组（`/`、`、` 连接的自然被收集进来）。
+# 不把「、」单独当择一：`Java、Spring、MySQL` 在 JD 里通常是并列（都要）。
+_OR_SEG_RE = re.compile(r"[^\n。；;，,]{0,40}?(?:或|或者)[^\n。；;，,]{0,40}")
+_OR_SPLIT_RE = re.compile(r"\s*(?:或|或者)\s*")
+_CHOICE_HINT_RE = re.compile(
+    r"(等其中一门|等其中一种|等其中一项|其中一门|其中一种|其中一项|之一|任一|"
+    r"任意一种|任意一项|至少一门|至少一种|任选其一|任选一门|择一)"
+)
+_CLAUSE_BREAKS = "，,；;。\n"
+
+
+def _technologies_in(segment: str) -> list[str]:
+    """按 TECH_DICT 抽技术名（长词优先，避免 Spring Cloud 退化成 Spring）。"""
+    hits = [t for t in TECH_DICT if re.search(re.escape(t), segment or "", re.IGNORECASE)]
+    hits.sort(key=len, reverse=True)
+    kept: list[str] = []
+    for tech in hits:
+        low = tech.lower()
+        if any(low != other.lower() and low in other.lower() for other in kept):
+            continue
+        kept.append(tech)
+    return list(dict.fromkeys(kept))
+
+
+def _clause_around(text: str, pos: int) -> str:
+    """取 pos 所在的分句（以中文/英文标点或换行分隔）。"""
+    start = 0
+    for i in range(pos - 1, -1, -1):
+        if text[i] in _CLAUSE_BREAKS:
+            start = i + 1
+            break
+    end = len(text)
+    for i in range(pos, len(text)):
+        if text[i] in _CLAUSE_BREAKS:
+            end = i
+            break
+    return text[start:end]
+
+
+def _extract_or_groups(text: str) -> list[list[str]]:
+    """从 JD 原文里抽出**择一要求**分组，返回如 `[["Java", "Go"]]`。
+
+    同一组只保留一次（大小写不敏感去重）。
+    """
+    groups: list[list[str]] = []
+    seen: set[tuple[str, ...]] = set()
+
+    def push(items: list[str]) -> None:
+        items = list(dict.fromkeys(items))
+        if len(items) < 2:
+            return
+        key = tuple(sorted(i.lower() for i in items))
+        if key in seen:
+            return
+        seen.add(key)
+        groups.append(items)
+
+    source = text or ""
+
+    # 1) 显式「A 或 B」：按「或」切分，每段取一个技术名
+    for match in _OR_SEG_RE.finditer(source):
+        parts = [p.strip() for p in _OR_SPLIT_RE.split(match.group(0)) if p.strip()]
+        items: list[str] = []
+        for part in parts:
+            hits = _technologies_in(part)
+            if hits:
+                items.append(hits[0])
+        push(items)
+
+    # 2) 「…等其中一门 / 之一 / 任一 …」：分句内所有技术词视为择一
+    for hint in _CHOICE_HINT_RE.finditer(source):
+        clause = _clause_around(source, hint.start())
+        items = _technologies_in(clause)
+        if len(items) < 2:
+            # 分句太碎（如「等其中一门开发语言」）时，回退到整行
+            line_start = source.rfind("\n", 0, hint.start()) + 1
+            line_end = source.find("\n", hint.start())
+            if line_end < 0:
+                line_end = len(source)
+            items = _technologies_in(source[line_start:line_end])
+        push(items)
+
+    return groups
 
 
 def parse_jd_text(text: str) -> ParsedJd:
@@ -478,6 +901,7 @@ def parse_jd_text(text: str) -> ParsedJd:
 
     parsed.skills_core = [t for t in matched if t not in bonus_matched][:25]
     parsed.skills_bonus = [t for t in matched if t in bonus_matched][:15]
+    parsed.skill_groups = _extract_or_groups(text)
 
     # --- 业务域关键词 ---
     # 说明：这里的结果既进 `keywords`（业务概念词），也用来**补全 skills_bonus**。

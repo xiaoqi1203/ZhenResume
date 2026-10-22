@@ -149,6 +149,7 @@ async def _process_item(item_id: str, batch_id: str, jd_id: str | None, user_id:
         item = db.get(HrBatchItem, item_id)
         batch = db.get(HrBatch, batch_id)
         report = db.get(AnalysisReport, report_id) if report_id else None
+        task = db.get(AnalysisTask, task_id) if task_id else None
         if item is not None:
             item.report_id = report_id
             if report is not None:
@@ -158,7 +159,10 @@ async def _process_item(item_id: str, batch_id: str, jd_id: str | None, user_id:
                 item.risk_level = report.risk_level
                 item.summary = report.summary
             else:
+                # task.error 里带着原因（例如「简历没有抽取到可分析的文本」），
+                # HR 排序表要能看出这个人为什么没出分，而不是一行空白。
                 item.status = "failed"
+                item.summary = (task.error if task is not None else None) or "分析失败"
         if batch is not None:
             batch.finished = (batch.finished or 0) + 1
         db.flush()

@@ -72,11 +72,21 @@ class JdMatchAgent(Agent):
             origin=("llm" if result.mode == "live" else "rule"),
         )
 
+        # 择一组（如「Java 或 Go」「C/C++/Java/Go 等其中一门」）命中任意一项即满足，
+        # 组内其它成员不应再被当作缺失提出 —— LLM 有时会从 JD 技能清单里把没写的语言挑出来。
+        satisfied_choice = analyze.satisfied_choice_keywords(ctx.parsed_resume, ctx.parsed_jd, ctx.resume_text)
+
+        def _is_satisfied_choice(keyword: str) -> bool:
+            low = str(keyword or "").strip().lower()
+            return bool(low) and any(low == kw or low in kw or kw in low for kw in satisfied_choice)
+
         # 剔除被判定为"表述差异"的误报
         kept_gaps = [f for f in baseline_gaps if not _suppressed_by(f, false_gaps)]
         ctx.findings = [f for f in ctx.findings if not _suppressed_by(f, false_gaps)]
 
         # 补充 LLM 判定的真实差距（规则层没识别出的语义差距）
+        from ..services.evidence import build_evidence
+
         for gap in data.get("real_gaps") or []:
             if not isinstance(gap, dict):
                 continue
@@ -84,8 +94,13 @@ class JdMatchAgent(Agent):
             reason = str(gap.get("reason") or "").strip()
             if not keyword or keyword in false_gaps:
                 continue
+            if _is_satisfied_choice(keyword):
+                continue
             if any(keyword in (f.get("title") or "") for f in kept_gaps):
                 continue
+            # 证据走 `build_evidence`（而不是手写 span=None）：关键词是从 JD 里抽出来的，
+            # 必然能在 JD 原文里定位 —— 手写 None 会让报告显示"未定位"，
+            # 但 `unverified=False`，两个字段自相矛盾，前端也没法高亮原文。
             kept_gaps.append(
                 {
                     "category": "gap",
@@ -95,7 +110,13 @@ class JdMatchAgent(Agent):
                     "issue": reason or f"JD 要求「{keyword}」，简历未给出可对应的经历或成果。",
                     "suggestion": f"若具备相关经验，请补充一条以「{keyword}」为核心动作的经历；若不具备，用相邻能力做迁移表述说明可快速上手。",
                     "rewritten_text": f"{keyword}：[补充一条以它为主语的经历，写清规模与结果]",
-                    "evidence": {"source": "jd", "quote": keyword if keyword in ctx.jd_text else "", "span": None, "field": "parsed.skills_core", "unverified": keyword not in ctx.jd_text},
+                    "evidence": (
+                        build_evidence(
+                            source="jd", quote=keyword, field="parsed.skills_core", jd_text=ctx.jd_text
+                        )
+                        if keyword in ctx.jd_text
+                        else {"source": "jd", "quote": "", "span": None, "field": "parsed.skills_core", "unverified": True}
+                    ),
                 }
             )
 

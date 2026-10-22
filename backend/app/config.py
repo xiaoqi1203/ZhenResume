@@ -40,6 +40,11 @@ class LlmProviderSpec:
     # 额外请求体字段（原样并入 payload）。典型用途：阿里云 qwen3 系列用
     # {"enable_thinking": false} 关掉思考，否则部分型号会在简单结构化任务上也耗时 60s+。
     extra_body: dict = field(default_factory=dict)
+    # 按模型覆盖的额外字段（键 = 模型名，值 = 并入的字段）。
+    # 典型用途：某些推理模型**强制要求** enable_thinking=true，与供应商级
+    # enable_thinking=false 冲突，必须按模型覆盖（原 qwen3.8-2.4t-a95b 就是这种；
+    # 该模型已于 2026-10-20 从链上移除，当前配置为空）。
+    model_extra_body: dict = field(default_factory=dict)
 
 
 
@@ -100,18 +105,25 @@ class Settings(BaseSettings):
     # 第一层：阿里云百炼（DashScope）OpenAI 兼容端点
     aliyun_api_key: str = ""
     aliyun_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    aliyun_model: str = "qwen3.8-max"
-    aliyun_model_fallbacks: str = "deepseek-v4-pro-0813,qwen3.7-flash,qwen3.7-flash-2026-07-15"
+    # 2026-10-20：对话模型统一为 DeepSeek 系，阿里云只保留 deepseek-v4.1-flash 一个模型。
+    # 注意它只在百炼提供；不带日期的名字实测 403（免费额度耗尽），-1017 快照可用。
+    aliyun_model: str = "deepseek-v4.1-flash-1017"
+    # 同层模型阶梯：默认留空 —— 该模型失败直接落到第二层 DeepSeek 官方。
+    aliyun_model_fallbacks: str = ""
     aliyun_price_input_per_m: float = 0.0      # 0 = 用下面的通用单价
     aliyun_price_output_per_m: float = 0.0
     # 额外请求体（JSON 对象字符串）。
     # ⚠️ 默认 `{"enable_thinking": false}` 是**实测结论**，不是随手写的：
-    #    真实 parse 节点上，qwen3.8-max 开思考时 60.1s / 2483 输出 token，
+    #    真实 parse 节点上，qwen3.8-max（历史模型）开思考时 60.1s / 2483 输出 token，
     #    关思考后 9.5s / 404 输出 token —— 快 6.3×、成本降 77%，而解析结果完全一致
     #    （工作2/项目1/技能6）。8 个节点串行时这就是"8 分钟一份"和"1 分钟一份"的差别。
+    #    当前主模型 deepseek-v4.1-flash-1017 实测也接受该参数。
     aliyun_extra_body: str = '{"enable_thinking": false}'
+    # 按模型覆盖 extra_body，JSON：{"模型名": {字段...}}
+    # 例：给某个强制思考的推理模型单独加 {"模型名":{"enable_thinking":true}}
+    aliyun_model_extra_body: str = ""
 
-    # 第二层：DeepSeek（兜底）
+    # 第二层：DeepSeek 官方（兜底：整个阿里云层不可用时才走）
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
     llm_model: str = "deepseek-flash"
@@ -219,6 +231,27 @@ class Settings(BaseSettings):
 
     # ---- 业务 ----
     free_quota: int = 3
+    # 免费次数是否拦截。默认关闭（2026-10-19 按产品要求停用限额）：
+    # 关闭后仍照常累加 free_quota_used 做统计，只是不再因为超过 free_quota 而拒绝诊断。
+    quota_enforced: bool = False
+    # ---- 账号与鉴权 ----
+    # HS256 签名密钥：**生产必须配置**（backend/.env: AUTH_SECRET=<随机长字符串>）。
+    # 留空时服务仍可启动（开发方便），但会打警告并使用不安全的默认密钥。
+    auth_secret: str = ""
+    # access token 有效期（分钟）。MVP 不做 refresh token：过期就让用户重新登录。
+    jwt_expire_minutes: int = 60 * 24 * 7
+    # True = 只认 Bearer token，匿名 X-Device-Id 一律 401（切到「必须登录」时打开）
+    auth_required: bool = False
+    # 管理员白名单：逗号分隔的邮箱 / 手机号。登录（或注册）时命中即把 role 提升为 admin。
+    # 为什么用白名单而不是「第一个注册的人自动当管理员」：后者在公网部署时等于把后台送给
+    # 第一个访问者。白名单只认部署者自己配置的身份，且改完 `.env` 后重新登录即生效。
+    # 已经存在的账号也可以用 `python -m scripts.grant_admin --email x` 直接授权。
+    admin_emails: str = ""
+    admin_phones: str = ""
+    # 短信开发模式：True 时不真发短信，验证码固定为 sms_dev_code 并在接口响应里返回，
+    # 方便本地/联调。**上线必须关掉**，否则任何人都能拿到验证码。
+    sms_dev_mode: bool = True
+    sms_dev_code: str = "123456"
     frontend_base_url: str = "http://127.0.0.1:3000"
     cors_origins: str = "http://127.0.0.1:3000,http://localhost:3000"
 
@@ -237,6 +270,12 @@ class Settings(BaseSettings):
         except json.JSONDecodeError:
             return {}
         return obj if isinstance(obj, dict) else {}
+
+    @staticmethod
+    def _parse_model_extra_body(raw: str) -> dict:
+        """解析「按模型覆盖」的额外字段；非法 JSON 或值不是 dict 一律忽略。"""
+        obj = Settings._parse_extra_body(raw)
+        return {str(k): v for k, v in obj.items() if isinstance(v, dict)}
 
     @property
     def llm_fast_node_set(self) -> set[str]:
@@ -289,6 +328,7 @@ class Settings(BaseSettings):
                         price_in=self.aliyun_price_input_per_m or self.llm_price_input_per_m,
                         price_out=self.aliyun_price_output_per_m or self.llm_price_output_per_m,
                         extra_body=self._parse_extra_body(self.aliyun_extra_body),
+                        model_extra_body=self._parse_model_extra_body(self.aliyun_model_extra_body),
                     )
                 )
             elif name == "deepseek" and self.deepseek_api_key.strip():
@@ -324,7 +364,7 @@ class Settings(BaseSettings):
 
     @property
     def llm_chain_summary(self) -> list[str]:
-        """形如 ['aliyun:qwen3.8-max', 'aliyun:qwen3.7-flash', 'deepseek:deepseek-flash']。"""
+        """形如 ['aliyun:deepseek-v4.1-flash-1017', 'deepseek:deepseek-flash']。"""
         return [f"{spec.name}:{model}" for spec in self.llm_chain for model in spec.models]
 
     @property
@@ -337,6 +377,16 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def admin_email_set(self) -> set[str]:
+        """管理员邮箱白名单（小写；空白项忽略）。"""
+        return {e.strip().lower() for e in (self.admin_emails or "").split(",") if e.strip()}
+
+    @property
+    def admin_phone_set(self) -> set[str]:
+        """管理员手机号白名单（只留数字；空白项忽略）。"""
+        return {"".join(ch for ch in p if ch.isdigit()) for p in (self.admin_phones or "").split(",") if p.strip()}
 
     def ensure_dirs(self) -> None:
         self.upload_dir.mkdir(parents=True, exist_ok=True)

@@ -14,7 +14,7 @@ from ..config import settings
 from ..db import get_db
 from ..errors import FileTooLarge, ResumeNotFound, UnsupportedFileType, ValidationError
 from ..models import Resume
-from ..schemas import EditorContent, ParsedResume, ResumeFromEditor
+from ..schemas import EditorContent, ParsedResume, ResumeFromEditor, ResumeUpdate
 from ..serializers import serialize_resume, serialize_resume_summary
 from ..services import extract as extract_service
 from ..services import dedup as dedup_service
@@ -167,6 +167,12 @@ def create_resume_from_editor(
 
     raw_text = resume_render.render_plain_text(content)
     parsed = resume_render.to_parsed_resume(content)
+    template_code = (payload.template_code or "").strip() or None
+
+    parsed_json = {**parsed.model_dump(), "editor_content": content.model_dump()}
+    if template_code:
+        # 存在 parsed_json 里而不是加列：理由同 editor_content（pydantic 忽略未知键）
+        parsed_json["template_code"] = template_code
 
     resume = Resume(
         user_id=user.id,
@@ -174,7 +180,7 @@ def create_resume_from_editor(
         file_url=None,
         raw_text=raw_text,
         # 解析结果 + 编辑器原文一起存：前者给诊断用，后者给编辑器回填与无损导出用
-        parsed_json={**parsed.model_dump(), "editor_content": content.model_dump()},
+        parsed_json=parsed_json,
         file_name=None,
         mime_type=None,
         size_bytes=len(raw_text.encode("utf-8")),
@@ -186,14 +192,83 @@ def create_resume_from_editor(
     return serialize_resume(resume)
 
 
+@router.put("/{resume_id}")
+def update_resume(
+    resume_id: str,
+    payload: ResumeUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """局部更新简历（编辑器「保存」走这里，而不是再 `from-editor` 建一份新的）。
+
+    关键约束：
+    - 归属校验与 GET/DELETE 完全一致：不存在 / 非本人 → 404 RESUME_NOT_FOUND
+      （不区分「不存在」与「无权限」，避免泄露他人简历 id 是否存在）；
+    - 给了 `content` 就用与创建完全相同的渲染链路重算 `raw_text` / `parsed_json`，
+      诊断流水线看到的始终是最新内容；`editor_content` 原样保留（它是无损回填的源）；
+    - `template_code` 只在请求**显式提供**时才改（`model_fields_set` 判定）：
+      content-only 的保存必须保留旧的模板选择，显式 null 才清除；
+    - `parsed_json` 是 JSON 列，SQLAlchemy 不追踪字典内部修改，必须整体赋新 dict。
+    """
+    resume = db.get(Resume, resume_id)
+    if resume is None or resume.user_id != user.id:
+        raise ResumeNotFound()
+
+    provided = payload.model_fields_set
+    old_parsed = dict(resume.parsed_json or {})
+    parsed_json = dict(old_parsed)
+    parsed_changed = False
+
+    if payload.title is not None:
+        resume.title = payload.title
+
+    if payload.content is not None:
+        content = payload.content
+        if not content.is_meaningful():
+            raise ValidationError("简历内容太少：请至少填写姓名、手机号或邮箱，以及一段经历或技能。")
+
+        raw_text = resume_render.render_plain_text(content)
+        parsed = resume_render.to_parsed_resume(content)
+        # 重建 parsed_json 时先带回旧的 template_code，避免「只改内容」把模板选择弄丢
+        parsed_json = {**parsed.model_dump(), "editor_content": content.model_dump()}
+        old_template = old_parsed.get("template_code")
+        if isinstance(old_template, str) and old_template.strip():
+            parsed_json["template_code"] = old_template.strip()
+
+        resume.raw_text = raw_text
+        resume.size_bytes = len(raw_text.encode("utf-8"))
+        parsed_changed = True
+
+    if "template_code" in provided:
+        new_template = payload.template_code
+        if new_template is None:
+            if "template_code" in parsed_json:
+                parsed_json.pop("template_code", None)
+                parsed_changed = True
+        elif parsed_json.get("template_code") != new_template:
+            parsed_json["template_code"] = new_template
+            parsed_changed = True
+
+    if parsed_changed:
+        resume.parsed_json = parsed_json
+
+    db.commit()
+    db.refresh(resume)
+    return serialize_resume(resume)
+
+
 @router.get("/{resume_id}/export/{format}")
 def export_resume(
     resume_id: str,
     format: Literal["markdown", "docx", "pdf"],  # noqa: A002 —— 与契约的路径参数名保持一致
+    fit: Literal["none", "one"] = "none",
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> Response:
     """导出简历（契约 §2.4）：Markdown / DOCX / PDF。
+
+    `fit=one`：仅对 PDF 生效 —— 逐档缩小字号与间距，尽量压到 1 页 A4，
+    实际使用的缩放比例与页数通过 `X-Fit-Scale` / `X-Page-Count` 响应头返回。
 
     注意是同步函数：PDF 转换是阻塞的外部进程调用，FastAPI 会把同步端点放进线程池执行，
     不会阻塞事件循环。改成 async 反而会卡住整个服务。
@@ -213,20 +288,43 @@ def export_resume(
             resume_render.export_filename(stem, "md"),
         )
 
-    docx_bytes = resume_render.render_docx(content)
     if format == "docx":
+        docx_bytes = resume_render.render_docx(content)
         return _file_response(docx_bytes, DOCX_MIME, resume_render.export_filename(stem, "docx"))
 
-    pdf_bytes = resume_render.docx_to_pdf(docx_bytes)
-    return _file_response(pdf_bytes, "application/pdf", resume_render.export_filename(stem, "pdf"))
+    if fit == "one":
+        pdf_bytes, scale, pages = resume_render.render_pdf_one_page(content)
+        return _file_response(
+            pdf_bytes,
+            "application/pdf",
+            resume_render.export_filename(stem, "pdf"),
+            extra_headers={
+                "X-Fit-Scale": f"{scale:.2f}",
+                "X-Page-Count": str(pages),
+            },
+        )
+
+    pdf_bytes = resume_render.docx_to_pdf(resume_render.render_docx(content))
+    pages = resume_render.pdf_page_count(pdf_bytes)
+    return _file_response(
+        pdf_bytes,
+        "application/pdf",
+        resume_render.export_filename(stem, "pdf"),
+        extra_headers={"X-Page-Count": str(pages)},
+    )
 
 
-def _file_response(body: bytes, media_type: str, filename: str) -> Response:
+def _file_response(
+    body: bytes, media_type: str, filename: str, extra_headers: dict[str, str] | None = None
+) -> Response:
     # 文件名用 RFC 5987 的 filename* 传中文，避免部分浏览器乱码
     from urllib.parse import quote
 
     disposition = f"attachment; filename=\"resume\"; filename*=UTF-8''{quote(filename)}"
-    return Response(content=body, media_type=media_type, headers={"Content-Disposition": disposition})
+    headers = {"Content-Disposition": disposition}
+    if extra_headers:
+        headers.update(extra_headers)
+    return Response(content=body, media_type=media_type, headers=headers)
 
 
 @router.get("")
