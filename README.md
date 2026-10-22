@@ -1,13 +1,15 @@
 # ZhenResume 简甄
 
 > **60 秒诊断简历，让每段经历都被看见。**
-> 上传简历 + 目标 JD，8 个 Agent 依次完成解析、岗位匹配、ATS 检测、影响力评估、风险扫描与逐条改写；
-> 每条结论都能回溯到简历原文，关键结论还会附上知识库依据。
+> 项目主线是 **Agentic RAG**：Agent 自主多轮检索、调用 9 只读工具取证，
+> 把每条诊断结论绑定到简历原文与知识库切片，并由服务端逐字校验；
+> 8 个 Agent 依次完成解析、岗位匹配、ATS 检测、影响力评估、风险扫描与逐条改写。
 
 <p align="left">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white">
   <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white">
   <img alt="LangGraph" src="https://img.shields.io/badge/LangGraph-1.2-1C3C3C">
+  <img alt="Agentic RAG" src="https://img.shields.io/badge/Agentic%20RAG-LangGraph-6B46C1">
   <img alt="Next.js" src="https://img.shields.io/badge/Next.js-14.2-000000?logo=nextdotjs&logoColor=white">
   <img alt="Docker" src="https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white">
   <img alt="Contract tests" src="https://img.shields.io/badge/contract%20tests-175%2F175-2E7D32">
@@ -28,6 +30,7 @@
 ## 目录
 
 - [为什么做这个](#为什么做这个)
+- [为什么主线是 Agentic RAG](#为什么主线是-agentic-rag)
 - [核心能力](#核心能力)
 - [实测数据](#实测数据)
 - [系统架构](#系统架构)
@@ -55,15 +58,39 @@ ZhenResume 想解决三个具体问题：
 
 ---
 
+## 为什么主线是 Agentic RAG
+
+一个常见误解是「Agentic RAG 比不过 fixed，所以 Agentic 没价值」。**问题出在对比口径**：
+
+- fixed 线并不是「规则检索」，而是 **固定检索策略 + 8 个 LLM Agent**（parse / jd_match / ats / impact / risk /
+  suggestion / report / qc 全部走模型）。所以 fixed vs agentic 的差异**只有检索策略**，不是「有没有 LLM」。
+- 如果真把 fixed 的 LLM 去掉，它会退化成规则 ATS 工具：实测 **3.0s / ¥0**，但只剩 **5 条模板建议**、
+  语义假差距 recall **0%**（mixed 与 equiv 两档 ATS 完全相同），而且解析边界、风险推理、逐条改写全部消失。
+  拿这个对手去证明 Agentic 更强，等于用「有 LLM 赢没 LLM」，变量是错的。
+
+因此本项目把 Agentic RAG 的价值定义为**三个「从无到有」**，而不是「覆盖率更高」：
+
+| 层级 | 语义假差距 recall | 建议质量 | 引用能力 | 单份成本 / 延迟 |
+|---|---|---|---|---|
+| 规则-only（fixed 去掉 LLM） | **0%** | 5 条模板 | 固定 top-3，无 provenance | ¥0 / 3.0s |
+| fixed + LLM（强基线） | **88.5%**（P-1） | 8 条、贴合原文 | 3 条知识引用 | ¥0.05 / 38.6s |
+| **Agentic + LLM（主线）** | 检索覆盖 **87.1%**（55 片小库，未超越 fixed） | 8–14 条 + 依据 | **14/14、12/12 逐字校验通过 + 检索轨迹** | ¥0.45 / 112.9s |
+
+**结论**：在 55 切片的小知识库上，Agentic 不赢覆盖、不赢分数（分数本来就由规则引擎算）；
+它赢的是 **自主取证、引用可校验、过程可解释**——这正是简历诊断最需要、也最难造假的能力。
+完整分析（含「fixed 去掉 LLM 后到底会怎样」的实测、以及知识库扩容/工具消融等后续实验设计）见
+[Agentic RAG 定位与消融分析](docs/AgenticRAG_定位与消融分析.md)。
+
 ## 核心能力
 
+- **Agentic RAG 主线**：4 个分析节点 + qc 后的证据节点升级为「自主多轮检索 + 工具调用」，
+  统一封装预算、trace、缓存、模型回退与强制收尾；引用落库前做「chunk 存在 + quote 逐字定位 + 本轮检索返回过」校验。
 - **8-Agent 诊断流水线**：`parse → jd_match → (ats ∥ impact ∥ risk) → suggestion → report → qc`，
   三路并行，单份端到端约 38.6s。
 - **双分制**：规则层「基础分」+ 语义层「深度分」并列展示；语义层只修正「同义表述被误判为缺失」的假差距，不改排序口径。
 - **证据链**：每条红色风险都有可定位原文引用；知识库结论级引用经过 `chunk 存在 + quote 逐字可定位` 双重校验。
 - **HR 批量初筛**：上传 JD + 多份简历，走 3 节点轻量图，100 份并发 50 约 52.7s，按总分降序 + CSV 导出。
 - **简历编辑器**：4 套真实版式模板、结构化区块、实时预览、Markdown / DOCX 导出、浏览器打印 PDF；编辑完可直接发起二次诊断。
-- **Agentic RAG（可选）**：4 个分析节点升级为「自主多轮检索 + 工具调用」，qc 后追加证据节点，把检索过程与引用依据展示给用户。
 - **完整产品闭环**：账号 / 验证码登录 / 匿名数据认领、报告分享（打码 + 撤销）、管理后台、Mock 支付与套餐。
 - **可降级**：主模型不可用时自动切换备用模型；全部模型不可用时回落到规则引擎，仍产出契约合规的报告。
 
@@ -316,7 +343,8 @@ ZhenResume/
   **不要直接公网部署**，上线前必须按 [性能报告 §8.3](docs/ZhenResume_性能与价格实测报告_2026-10-22.md) 完成加固。
 - **支付是 Mock**：回调未验签，仅用于演示套餐流程；接真实渠道需补签名校验与对账。
 - **真实简历质量尚未人工验收**：评测使用合成夹具与 3 份样例，真实用户分布下的解析/建议质量是下一步重点。
-- **Agentic 成本高**：约 0.45 元/份、112s/份，默认关闭；它证明的是「引用能力」，不是「分数更准」。
+- **Agentic 是主线能力但默认关闭**：约 0.45 元/份、112s/份，成本是 fixed 的 8.8×；
+  它证明的是「自主取证 + 引用可校验 + 过程可解释」，不是「分数更准」，因此按需开启（审计/演示场景）。
 - **OCR / PDF 为可选能力**：图片简历需安装本地 OCR 引擎；PDF 导出需配置 LibreOffice，缺失时返回 503 并引导 DOCX。
 - **排序质量未被证明提升**：语义接入修正了分数低估，但 Spearman 未显著提升（32 例评测）。
 - **单机 / 小规模验证**：未做多机、多租户、长时间稳定性与限流压测。
@@ -326,6 +354,7 @@ ZhenResume/
 ## 文档索引
 
 - [性能与价格实测报告（2026-10-22）](docs/ZhenResume_性能与价格实测报告_2026-10-22.md) —— 全方面测试、性能、成本与定价
+- [Agentic RAG 定位与消融分析](docs/AgenticRAG_定位与消融分析.md) —— 为什么 Agentic 不赢覆盖、价值在哪、如何证明
 - [API 契约](docs/api-contract.md) —— 前后端唯一接口依据
 - [关键代码与设计原理](docs/ZhenResume_关键代码与设计原理.md)
 - [新链路：LangChain 多 Agent + Agentic RAG 方案](docs/ZhenResume_新链路LangChain-多Agent-AgenticRAG方案.md)
