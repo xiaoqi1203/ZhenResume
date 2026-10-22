@@ -2,10 +2,12 @@
 # ZhenResume 虚拟机一键落地：中间件（PostgreSQL + Redis）装进 Docker，应用仍跑在宿主机。
 #
 # 用法（Xshell 里，仓库已同步到 VM）：
-#     cd ~/ZhenResume && bash deploy/infra/bootstrap-vm.sh
+#     cd ~/ZhenResume && POSTGRES_PASSWORD='<强密码>' REDIS_PASSWORD='<另一个强密码>' \
+#         bash deploy/infra/bootstrap-vm.sh
 #
 # 幂等：可以反复执行。每个已有配置都会被"删掉同名 key 再追加"，不会重复。
-# 默认密码统一为 1203（端口只绑 127.0.0.1，不对局域网开放）。
+# ⚠️ 脚本不内置任何默认密码：必须通过环境变量传入，避免把凭据写进版本库。
+#    端口默认只绑 127.0.0.1，不对局域网开放。
 #
 # 脚本只做：装 Docker（如缺）→ 写两份 .env → 起 db/redis → 等健康 → 装依赖
 #          → 基础设施自检 → 建表 + 灌知识库 → 端到端契约自检
@@ -16,7 +18,8 @@
 
 set -uo pipefail
 
-PW="1203"
+PW="${POSTGRES_PASSWORD:?请先 export POSTGRES_PASSWORD=<强密码>}"
+REDIS_PW="${REDIS_PASSWORD:-$PW}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BACKEND="$REPO/backend"
 COMPOSE_FILE="$REPO/deploy/infra/docker-compose.yml"
@@ -62,7 +65,7 @@ POSTGRES_USER=zhenresume
 POSTGRES_PASSWORD=$PW
 POSTGRES_DB=zhenresume
 POSTGRES_PORT=5432
-REDIS_PASSWORD=$PW
+REDIS_PASSWORD=$REDIS_PW
 REDIS_PORT=6379
 API_PORT=8000
 EMBEDDING_FALLBACK_BASE_URL=http://host.docker.internal:11434/v1
@@ -75,13 +78,13 @@ cp "$BACKEND/.env" "$BACKEND/.env.bak.$(date +%Y%m%d-%H%M%S)"
 sed -i '/^DATABASE_URL=/d; /^WORKFLOW_EXECUTOR=/d; /^CELERY_BROKER_URL=/d; /^CELERY_RESULT_BACKEND=/d; /^WORKFLOW_ENGINE=/d; /^WORKFLOW_PARALLEL=/d; /^HR_SCREENING=/d; /^HR_BATCH_CONCURRENCY=/d; /^EMBEDDING_FALLBACK_BASE_URL=/d' "$BACKEND/.env"
 cat >> "$BACKEND/.env" <<EOF
 
-# ---- 以下由 deploy/infra/bootstrap-vm.sh 写入（密码统一 $PW）----
+# ---- 以下由 deploy/infra/bootstrap-vm.sh 写入（db 用 $PW，redis 用 $REDIS_PW）----
 # 存储：PostgreSQL（容器，端口只绑 127.0.0.1）
 DATABASE_URL=postgresql+psycopg://zhenresume:$PW@127.0.0.1:5432/zhenresume
 # 执行：Celery + Redis（broker 用 /1，结果后端用 /2，别混库）
 WORKFLOW_EXECUTOR=celery
-CELERY_BROKER_URL=redis://:$PW@127.0.0.1:6379/1
-CELERY_RESULT_BACKEND=redis://:$PW@127.0.0.1:6379/2
+CELERY_BROKER_URL=redis://:$REDIS_PW@127.0.0.1:6379/1
+CELERY_RESULT_BACKEND=redis://:$REDIS_PW@127.0.0.1:6379/2
 # 编排：LangGraph + 并行 + HR 排序表
 WORKFLOW_ENGINE=langgraph
 WORKFLOW_PARALLEL=true
@@ -176,7 +179,7 @@ cat <<EOF
    curl -s http://127.0.0.1:8000/api/v1/health
 
 4) 常用排查
-   队列积压：docker exec zhenresume-redis redis-cli -a $PW -n 1 llen default
+   队列积压：docker exec zhenresume-redis redis-cli -a $REDIS_PW -n 1 llen default
    容器状态：$DOCKER compose -f $COMPOSE_FILE ps
    备份数据库：docker exec zhenresume-db pg_dump -U zhenresume zhenresume > backup-\$(date +%F).sql
 
