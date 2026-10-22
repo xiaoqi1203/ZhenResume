@@ -97,7 +97,7 @@ def main() -> int:
         findings = analyze.rule_baseline_findings(
             parsed_resume, parsed_jd, "backend", resume_text, jd_text
         )
-        wide = rag.build_query(parsed_jd.model_dump(), parsed_resume.model_dump())
+        wide = rag.build_query(parsed_jd.model_dump(), parsed_resume.model_dump(), raw_text=resume_text)
         gold2 = gold_v2_ids(case, gold_map, findings)
         if not gold2:
             continue

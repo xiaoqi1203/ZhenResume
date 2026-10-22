@@ -116,7 +116,13 @@ async def run_workflow(task_id: str) -> str | None:
         )
 
         # RAG 检索：一次检索，全链路复用，避免每个 Agent 重复打库
-        query = rag.build_query(ctx.parsed_jd.model_dump(), ctx.parsed_resume.model_dump())
+        # ⚠️ 传 resume_text：原实现只拼技能栏，技能栏相同的简历会得到逐字相同的
+        # query（见 rag.build_query 的 docstring）。
+        query = rag.build_query(
+            ctx.parsed_jd.model_dump(),
+            ctx.parsed_resume.model_dump(),
+            raw_text=ctx.resume_text,
+        )
         if query.strip():
             ctx.knowledge_hits = rag.search(db, query, top_k=5)
 

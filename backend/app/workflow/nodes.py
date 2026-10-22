@@ -62,8 +62,17 @@ def setup_node(state: WorkflowState) -> dict:
 
 
 def retrieve_node(state: WorkflowState, runtime: Runtime[GraphContext]) -> dict:
-    """一次检索、全链路复用（保住现状"不每个 Agent 各检索一次"的决策）。"""
-    query = rag.build_query(state.get("parsed_jd") or {}, state.get("parsed_resume") or {})
+    """一次检索、全链路复用（保住现状"不每个 Agent 各检索一次"的决策）。
+
+    ⚠️ 必须把 `resume_text` 传进 `build_query`：原实现只拼技能栏，
+    实测 32 份夹具的技能栏一致 → query 逐字相同 → 检索无法区分简历。
+    见 `rag.build_query` 的 docstring。
+    """
+    query = rag.build_query(
+        state.get("parsed_jd") or {},
+        state.get("parsed_resume") or {},
+        raw_text=state.get("resume_text") or "",
+    )
     if not query.strip():
         return {"knowledge_hits": []}
     with session_scope() as db:

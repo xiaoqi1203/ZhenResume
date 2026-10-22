@@ -171,7 +171,7 @@ def main() -> int:
             continue
 
         # 产品现状：JD 宽 query，单次全局排序
-        wide = rag.build_query(parsed_jd.model_dump(), parsed_resume.model_dump())
+        wide = rag.build_query(parsed_jd.model_dump(), parsed_resume.model_dump(), raw_text=resume_text)
         t0 = time.perf_counter()
         with session_scope() as db:
             baseline = rag.search(db, wide, top_k=k, role_family="backend")

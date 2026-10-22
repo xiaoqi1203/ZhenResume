@@ -77,7 +77,7 @@ def resolve_gold() -> dict[tuple[str, int], str]:
 def fixed_arm(resume_text: str, jd_text: str, parsed_resume, parsed_jd, top_k: int = 5) -> dict:
     """当前产品链路的检索方式：一次、JD 驱动、top_k 固定。"""
     t0 = time.perf_counter()
-    query = rag.build_query(parsed_jd.model_dump(), parsed_resume.model_dump())
+    query = rag.build_query(parsed_jd.model_dump(), parsed_resume.model_dump(), raw_text=resume_text)
     with session_scope() as db:
         hits = rag.search(db, query, top_k=top_k, role_family="backend")
     return {
