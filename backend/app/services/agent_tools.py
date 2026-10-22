@@ -46,12 +46,39 @@ class ResumeSearchArgs(BaseModel):
     limit: int = Field(default=3, ge=1, le=MAX_HITS)
 
 
+class ResumeBatchSearchArgs(BaseModel):
+    """批量核验关键词是否出现在简历里。
+
+    为什么需要这个工具（实测结论）：分析 Agent 拿到"缺失关键词清单"后，
+    会**为每个词单独调一次 resume_search** —— 实测 ats Agent 因此调了 10 次
+    `resume_search`，用掉 12 次模型往返、55 秒，最后还因为预算耗尽被截断。
+    而这件事本质上是一次"文本包含"判断，批量做是同一份开销。
+    """
+
+    keywords: list[str] = Field(
+        min_length=1, max_length=20, description="要一次性核验的关键词列表（≤20 个）"
+    )
+
+
 class ReadSectionArgs(BaseModel):
     section: str = Field(description="work | projects | skills | education | certificates | basics")
 
 
 class LocateQuoteArgs(BaseModel):
     quote: str = Field(min_length=1, description="要核验的原文引文，须逐字来自简历或 JD")
+    source: str = Field(default="resume", description="resume | jd")
+
+
+class LocateBatchArgs(BaseModel):
+    """批量核验引文能否定位。
+
+    与 `resume_search` 同理：分析 Agent 提交前要核验每条结论的引文，
+    逐条调 `locate_quote` 实测用了 6-8 次工具调用。批量核验是同一个字符串查找。
+    """
+
+    quotes: list[str] = Field(
+        min_length=1, max_length=20, description="要一次性核验的原文引文列表（≤20 条）"
+    )
     source: str = Field(default="resume", description="resume | jd")
 
 
@@ -87,8 +114,19 @@ def _schema(model: type[BaseModel], name: str, description: str) -> dict:
 TOOL_SPECS: list[dict] = [
     _schema(JdRequirementsArgs, "jd_requirements", "查看岗位要求清单（核心技能/加分项/关键词/职责）"),
     _schema(ResumeSearchArgs, "resume_search", "在简历全文中查找某个关键词，返回其在原文中的片段与位置"),
+    _schema(
+        ResumeBatchSearchArgs,
+        "resume_batch_search",
+        "★批量核验：一次检查多个关键词是否出现在简历中。"
+        "核验'缺失关键词清单'时用它，比逐个 resume_search 快得多",
+    ),
     _schema(ReadSectionArgs, "read_section", "读取简历某一区块的完整内容（工作/项目/技能/教育）"),
     _schema(LocateQuoteArgs, "locate_quote", "★自检工具：核验一段引文能否在简历或 JD 原文中逐字定位"),
+    _schema(
+        LocateBatchArgs,
+        "locate_batch",
+        "★批量自检：一次核验多条引文能否定位。提交多条结论前用它，比逐个 locate_quote 快得多",
+    ),
     _schema(KbSearchArgs, "kb_search", "检索岗位知识库，获取能力模型/表达式范例/合规依据"),
     _schema(ReadChunkArgs, "read_chunk", "读取知识库某个切片的全文（摘要不够时下钻）"),
     _schema(RubricGetArgs, "rubric_get", "获取本次判定使用的准则（工作记忆，批次内冻结）"),
@@ -135,10 +173,14 @@ class ToolRunner:
                 return self._jd_requirements(JdRequirementsArgs(**args))
             if name == "resume_search":
                 return self._resume_search(ResumeSearchArgs(**args))
+            if name == "resume_batch_search":
+                return self._resume_batch_search(ResumeBatchSearchArgs(**args))
             if name == "read_section":
                 return self._read_section(ReadSectionArgs(**args))
             if name == "locate_quote":
                 return self._locate_quote(LocateQuoteArgs(**args))
+            if name == "locate_batch":
+                return self._locate_batch(LocateBatchArgs(**args))
             if name == "kb_search":
                 return await self._kb_search_async(KbSearchArgs(**args))
             if name == "read_chunk":
@@ -211,6 +253,90 @@ class ToolRunner:
             digest=f"found={','.join(variants) or 'none'} n={len(snippets)}",
         )
 
+    def _resume_batch_search(self, a: ResumeBatchSearchArgs) -> ToolResult:
+        """批量核验关键词是否出现。
+
+        为什么不复用 `_resume_search` 循环：本方法要返回**统一的判定口径**，
+        而 `_resume_search` 关心的是"给出可引用的片段"。这里只需要"有没有"，
+        顺带给出第一次出现的位置，让模型能用 `locate_quote` 继续核验。
+
+        ⚠️ 大小写与全半角：简历里 `Java`/`java`、`K8s`/`Ｋ8s` 都应算命中，
+        所以统一小写比较；但**返回的 snippet 用原文**，模型才能逐字引用。
+        """
+        haystack = self.resume_text.lower()
+        results: list[dict] = []
+        for raw_kw in a.keywords[:20]:
+            kw = str(raw_kw or "").strip()
+            if not kw:
+                continue
+            low = kw.lower()
+            idx = haystack.find(low)
+            hit = idx >= 0
+            item: dict = {"keyword": kw, "found": hit}
+            if hit:
+                start = max(0, idx - SNIPPET_RADIUS)
+                end = min(len(self.resume_text), idx + len(kw) + SNIPPET_RADIUS)
+                item["span"] = [idx, idx + len(kw)]
+                item["snippet"] = self.resume_text[start:end]
+            else:
+                # 没命中原文时再查解析字段（PDF 抽取可能把词拆到不同行）
+                lowered = kw.lower()
+                where = []
+                if any(lowered in (h or "").lower() for w in self.parsed_resume.work for h in w.highlights):
+                    where.append("work.highlights")
+                if any(lowered in (h or "").lower() for p in self.parsed_resume.projects for h in p.highlights):
+                    where.append("projects.highlights")
+                if any(lowered == (s or "").lower() for s in self.parsed_resume.skills):
+                    where.append("skills")
+                if where:
+                    item["found"] = True
+                    item["found_in"] = where
+            results.append(item)
+
+        found = [r["keyword"] for r in results if r["found"]]
+        missing = [r["keyword"] for r in results if not r["found"]]
+        return ToolResult(
+            ok=True,
+            data={
+                "checked": len(results),
+                "found": found,
+                "missing": missing,
+                "details": results,
+            },
+            digest=f"checked={len(results)} hit={len(found)} miss={len(missing)}",
+        )
+
+    def _locate_batch(self, a: LocateBatchArgs) -> ToolResult:
+        """批量核验引文能否逐字定位（与 `_locate_quote` 同一套 `locate_quote`）。"""
+        source = "jd" if a.source == "jd" else "resume"
+        text = self.jd_text if source == "jd" else self.resume_text
+        results: list[dict] = []
+        for raw in a.quotes[:20]:
+            quote = str(raw or "").strip()
+            if not quote:
+                continue
+            span = locate_quote(text, quote)
+            results.append(
+                {
+                    "quote": quote,
+                    "locatable": span is not None,
+                    "span": list(span) if span else None,
+                }
+            )
+        ok_count = len([r for r in results if r["locatable"]])
+        return ToolResult(
+            ok=True,
+            data={
+                "source": source,
+                "locatable": ok_count,
+                "total": len(results),
+                # 只把**定位失败**的引文点名列出（模型要修的就是这些）
+                "failed": [r["quote"] for r in results if not r["locatable"]],
+                "details": results,
+            },
+            digest=f"{source}: {ok_count}/{len(results)} locatable",
+        )
+
     def _read_section(self, a: ReadSectionArgs) -> ToolResult:
         pr = self.parsed_resume
         section = (a.section or "").strip()
@@ -257,7 +383,28 @@ class ToolRunner:
         )
 
     async def _kb_search_async(self, a: KbSearchArgs) -> ToolResult:
-        """知识库检索（同步 IO 放线程池，避免阻塞事件循环）。"""
+        """知识库检索（同步 IO 放线程池，避免阻塞事件循环）。
+
+        ## 为什么默认仍是单 query 全局排序（`rag.search`）
+
+        曾尝试让 `kb_search` 默认走 `rag.search_scoped`（每 scope 排序 + RRF 融合），
+        想解决"Agent 窄 query 第 1 轮 gold 覆盖只有 55%"的问题。**实测否决**：
+
+            真实链路（eval_rag，10 例，同预算第 1 轮口径）
+                单 query 全局排序        55.0%
+                scope 融合 RRF           58.3%   ← 仅 +3.3pp
+            检索器级（eval_retrieval，10 例，recall@5）
+                宽 query 全局排序        89.2%
+                宽 query scope 融合      58.3%   ← **−30.8pp，严重劣化**
+
+        代价是延迟 +30%（每次检索多算一遍分组）与 200 行复杂逻辑，换 +3.3pp 不划算，
+        而且会把宽 query 路径打坏。`rag.search_scoped` 保留在 services/rag.py
+        作为**已评测、暂不启用**的方案，需要广度的场景（合规审查等）可显式调用。
+
+        结论：窄 query 的短板不在"排序方式"，在 **query 本身覆盖面窄** ——
+        真正的杠杆是让模型把 query 写宽（提示词已要求"一次 kb_search 覆盖一类规范主题"），
+        而不是在检索器里硬凑维度。
+        """
         import asyncio
 
         def _run() -> list[dict]:
@@ -278,8 +425,12 @@ class ToolRunner:
                      "score": h.get("score"), "text": (h.get("text") or "")[:600]}
                     for h in hits
                 ],
+                # 让模型看得见"这次覆盖了哪几类依据"，它才知道还缺什么方向
+                "scopes_covered": sorted({h.get("scope") or "" for h in hits if h.get("scope")}),
             },
-            digest=f"{len(hits)} hits" + (f" top={hits[0]['score']}" if hits else ""),
+            digest=f"{len(hits)} hits scopes=" + ",".join(
+                sorted({h.get("scope") or "" for h in hits if h.get("scope")})
+            ),
         )
 
     def _read_chunk(self, a: ReadChunkArgs) -> ToolResult:

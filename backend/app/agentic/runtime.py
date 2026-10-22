@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -26,6 +27,15 @@ from ..config import settings
 from .models import build_models
 
 logger = logging.getLogger(__name__)
+
+# 墙钟超时：`asyncio.timeout` 是 Python 3.11 才有的 API。
+# Docker 镜像用 3.12 没问题，但本地 venv 可能是 3.10 —— 直接 AttributeError，
+# 且会被 Agent 节点的 `except` 吞掉变成"0ms 降级为规则基线"，看起来像模型没答，
+# 实际是解释器版本不兼容。这里给 3.10 一个垫片（async_timeout 是 langchain 的传递依赖）。
+try:  # Python 3.11+
+    from asyncio import timeout as _wall_clock_timeout
+except ImportError:  # pragma: no cover - Python 3.10
+    from async_timeout import timeout as _wall_clock_timeout  # type: ignore[no-redef]
 
 MAX_TOOL_RESULT_CHARS = 3000
 
@@ -141,8 +151,11 @@ def _args_model_of(name: str) -> type[BaseModel]:
     mapping = {
         "jd_requirements": t.JdRequirementsArgs,
         "resume_search": t.ResumeSearchArgs,
+        # 批量版本：分析 Agent 的预算基本都花在这两个上（实测逐个查会耗尽预算）
+        "resume_batch_search": t.ResumeBatchSearchArgs,
         "read_section": t.ReadSectionArgs,
         "locate_quote": t.LocateQuoteArgs,
+        "locate_batch": t.LocateBatchArgs,
         "kb_search": t.KbSearchArgs,
         "read_chunk": t.ReadChunkArgs,
         "rubric_get": t.RubricGetArgs,
@@ -299,16 +312,68 @@ class BaseAgent:
         recursion_limit = spec.budget.max_model_calls * 4 + 20
         last_state: dict[str, Any] | None = None
         recursion_hit = False
+        timeout_hit = False
+        # 逐次模型往返的耗时与 token：排查"为什么这个 Agent 慢"时，只有总耗时是不够的 ——
+        # 实测一次 agentic_evidence 是 6 次串行往返、其中某一次占 18.8s，
+        # 只看总耗时无法判断该压输出、压上下文还是减轮次。
+        call_timings: list[dict[str, Any]] = []
+        prev_ai_count = 0
+        call_started = time.perf_counter()
+        finished_early = False
         try:
-            async for state in agent.astream(
-                {"messages": [HumanMessage(content=self._user_message(inputs))]},
-                stream_mode="values",
-                config={"recursion_limit": recursion_limit},
-            ):
-                last_state = state
+            # ⚠️ 墙钟上限必须真的执行（`AgentBudget.wall_clock_s` 之前只是声明，没有任何地方读它）。
+            # 实测代价：证据节点在 4 轮检索上耗了 39.6s，而整条主链路 8 步只有 37s。
+            # 有上限后最坏情况是有界的 —— 超时就带着已有消息走"强制收尾"，而不是无限等。
+            async with _wall_clock_timeout(spec.budget.wall_clock_s):
+                async for state in agent.astream(
+                    {"messages": [HumanMessage(content=self._user_message(inputs))]},
+                    stream_mode="values",
+                    config={"recursion_limit": recursion_limit},
+                ):
+                    last_state = state
+                    msgs = list(state.get("messages") or [])
+                    ai_msgs = [m for m in msgs if isinstance(m, AIMessage)]
+                    while len(ai_msgs) > prev_ai_count:
+                        now = time.perf_counter()
+                        msg = ai_msgs[prev_ai_count]
+                        usage = getattr(msg, "usage_metadata", None) or {}
+                        call_timings.append(
+                            {
+                                "call": prev_ai_count + 1,
+                                "elapsed_ms": int((now - call_started) * 1000),
+                                "tokens_in": int(usage.get("input_tokens") or 0),
+                                "tokens_out": int(usage.get("output_tokens") or 0),
+                                # 这一轮模型决定调什么工具（finish = 收尾）
+                                "tools": [str(c.get("name") or "") for c in (getattr(msg, "tool_calls", None) or [])],
+                                # 本次请求实际发出去的上下文规模（消息条数）—— 用来验证"重发累积上下文"
+                                "context_messages": len(msgs),
+                            }
+                        )
+                        prev_ai_count += 1
+                        call_started = now
+
+                        # ⚠️ 模型已经调过 finish 就立刻结束循环（实测省 1.8s/次）：
+                        # `create_agent` 在 finish 工具返回后还会再跑一次模型往返去"总结"，
+                        # 那次输出只有 8 token、耗 1.8s，对结果毫无贡献。
+                        # 这里主动中断 —— 结构化结果已经拿到，不需要它再说话。
+                        if any(
+                            str(c.get("name") or "") == spec.finish_name
+                            for c in (getattr(msg, "tool_calls", None) or [])
+                        ):
+                            finished_early = True
+                            break
+                    if finished_early:
+                        break
         except GraphRecursionError:
             recursion_hit = True
             logger.warning("[%s] 触发递归上限 %d，改用已有消息强制收尾", spec.name, recursion_limit)
+        except (TimeoutError, asyncio.TimeoutError):
+            # 3.10 上 asyncio.TimeoutError 与内置 TimeoutError 不是同一个类（3.11 才合并），
+            # 所以两个都捕获，保证墙钟超时走"强制收尾"而不是冒泡成节点失败。
+            timeout_hit = True
+            logger.warning(
+                "[%s] 触发墙钟上限 %ss，改用已有消息强制收尾", spec.name, spec.budget.wall_clock_s
+            )
 
         messages = list((last_state or {}).get("messages") or [])
         analysis = analyze_messages(messages, finish_name=spec.finish_name)
@@ -317,7 +382,7 @@ class BaseAgent:
 
         if analysis["finish_args"] is None:
             truncated = True
-            forced_msg = self._forced_finish(primary, messages, finish_tool)
+            forced_msg = self._forced_finish(primary, messages, finish_tool, fallbacks)
             if forced_msg is not None:
                 forced = True
                 for call in getattr(forced_msg, "tool_calls", None) or []:
@@ -348,6 +413,15 @@ class BaseAgent:
             "truncated": truncated,
             "forced_finish": forced,
             "recursion_hit": recursion_hit,
+            # 墙钟超时：区分"预算用完"与"单纯太慢"，排查 39s 那种节点时要能一眼看出来
+            "timeout_hit": timeout_hit,
+            "wall_clock_limit_s": spec.budget.wall_clock_s,
+            # 收到 finish 后主动中断（省掉 create_agent 那次无用的"总结"往返）
+            "finished_early": finished_early,
+            # 逐次模型往返明细：这是回答"为什么这个 Agent 慢"的唯一依据。
+            # 没有它只能看到"总共 33s"，看不出是首轮冷启动、还是某一次输出爆炸、
+            # 还是上下文重发导致的累积变慢。
+            "call_timings": call_timings,
             "tokens": analysis["tokens_in"] + analysis["tokens_out"],
             "cost": analysis["cost"],
             "latency_ms": int((time.perf_counter() - started) * 1000),
@@ -357,7 +431,11 @@ class BaseAgent:
         notes: str | None = None
         if truncated:
             status = "truncated"
-            notes = "预算/递归耗尽后强制收尾"
+            notes = (
+                f"墙钟超时（{spec.budget.wall_clock_s}s）后强制收尾"
+                if timeout_hit
+                else "预算/递归耗尽后强制收尾"
+            )
         if not output:
             status = "degraded"
             notes = "未取得结构化输出"
@@ -381,23 +459,49 @@ class BaseAgent:
             f"【简历原文】\n{inputs.resume_text}",
         ]
         if inputs.extra:
-            parts.append("【任务附加信息】\n" + json.dumps(inputs.extra, ensure_ascii=False)[:2000])
+            # ⚠️ 这个上限曾经是 2000，但 W1 加入 `knowledge_seed`（3 条检索起点依据，
+            # 每条 400 字）后，`rule_baseline` 排在前面会把 seed 整段截掉 ——
+            # 表现为"提示词要求用 seed，但模型根本看不到它"。放宽到 6000 并**把
+            # knowledge_seed 提到最前面**，保证最关键的依据不会被截断。
+            extra = dict(inputs.extra)
+            seed = extra.pop("knowledge_seed", None)
+            payload: dict = {}
+            if seed:
+                payload["knowledge_seed"] = seed
+            payload.update(extra)
+            parts.append("【任务附加信息】\n" + json.dumps(payload, ensure_ascii=False)[:6000])
         parts.append("请按系统提示完成工作，并在最后调用 finish 提交结构化结果。")
         return "\n\n".join(parts)
 
     @staticmethod
-    def _forced_finish(primary: Any, messages: list[Any], finish_tool: StructuredTool) -> Any:
-        try:
-            bound = primary.bind_tools(
-                [finish_tool],
-                tool_choice={"type": "function", "function": {"name": finish_tool.name}},
-            )
-            return bound.invoke(
-                [*messages, HumanMessage(content="材料已足够，请立即调用 finish 提交结果，不要再调用其他工具。")]
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("强制收尾失败：%s: %s", type(exc).__name__, str(exc)[:200])
-            return None
+    def _forced_finish(
+        primary: Any, messages: list[Any], finish_tool: StructuredTool,
+        fallbacks: list[Any] | None = None,
+    ) -> Any:
+        """预算耗尽时的兜底收尾：**强制模型只调 finish**，把已有材料交出来。
+
+        ⚠️ 必须沿降级链逐个试（实测踩到）：只试 `primary` 时，若主模型额度耗尽（403），
+        兜底本身也会失败，于是"预算耗尽"直接变成"产出为空"—— 分析 Agent 白跑 15 秒。
+        这里改成按 `primary → fallbacks` 顺序试，任何一个成功即可。
+        """
+        prompt = "材料已足够，请立即调用 finish 提交结果，不要再调用其他工具。"
+        for model in [primary, *(fallbacks or [])]:
+            try:
+                bound = model.bind_tools(
+                    [finish_tool],
+                    tool_choice={"type": "function", "function": {"name": finish_tool.name}},
+                )
+                result = bound.invoke([*messages, HumanMessage(content=prompt)])
+                if getattr(result, "tool_calls", None):
+                    return result
+            except Exception as exc:  # noqa: BLE001 —— 换下一个模型继续试
+                logger.info(
+                    "强制收尾：该模型失败，换下一个（%s: %s）",
+                    type(exc).__name__, str(exc)[:120],
+                )
+                continue
+        logger.warning("强制收尾失败：降级链全部模型均不可用")
+        return None
 
 
 __all__ = [

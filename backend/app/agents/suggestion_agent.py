@@ -65,6 +65,11 @@ class SuggestionAgent(Agent):
                 f for f in llm_findings
                 if not any(_covered(r, [f]) for r in rule_all)
             ]
+            # ★ 知识库依据不随"条目让位"一起丢：被规则条目覆盖掉的 LLM 条目，
+            #   它带的 citations（W1：分析阶段检索到的规范依据）要**转移**到那条
+            #   规则条目上。否则会出现「Agent 明明查到了依据，但最终报告里没有」——
+            #   而规则条目的措辞又恰好是被检索依据支撑的同一件事。
+            _transfer_citations(rule_all, llm_findings)
             findings = merge_findings(rule_all, llm_only)
         else:
             findings = baseline
@@ -170,7 +175,15 @@ def _select_final(findings: list[dict], limit: int = MAX_FINAL) -> list[dict]:
         picked_ids.add(id(item))
 
     # 2) 剩余名额按严重度补足
-    for item in ordered:
+    #
+    # ⚠️ 带知识库引用的条目优先 —— 否则"Agent 查到了依据"会在这一步被静默丢掉。
+    # 实测（2026-10-21，扩库后）：分析阶段产出 17/19 条带引用，最终报告只剩 5 条带引用；
+    # 原因就是这里纯按严重度截断，把带引用的 LLM 条目挤出去了。
+    # 引用是 agentic 模式唯一"从 0 到 1"的能力，不能因为排序规则而丢失。
+    for item in sorted(
+        ordered,
+        key=lambda f: (0 if f.get("citations") else 1),
+    ):
         if len(picked) >= limit:
             break
         if id(item) not in picked_ids:
@@ -187,6 +200,37 @@ def _breakdown(findings: list[dict]) -> dict:
 def _covered(finding: dict, others: list[dict]) -> bool:
     basis = (finding.get("original_text") or finding.get("title") or "")[:24]
     return any(basis and basis in str(o.get("original_text") or "") + str(o.get("title") or "") for o in others)
+
+
+def _transfer_citations(rule_items: list[dict], llm_items: list[dict]) -> None:
+    """把被规则条目覆盖掉的 LLM 条目上的知识库引用，转移到那条规则条目上。
+
+    ## 为什么需要这一步（W1 引入的副作用）
+
+    知识库依据是**分析阶段**（jd_match/ats/impact/risk）产出的，挂在 `origin=llm` 的条目上。
+    但 `suggestion` 的既有铁律是「规则层条目一律保留，LLM 中与规则层重复的条目让位」——
+    于是最常见的情况恰好是：Agent 查到了规范、写了一条带引用的结论，
+    而规则层对同一件事也有一条（措辞不同、无引用），结果**带引用的那条被丢掉了**。
+
+    实测（task 887a5eb4）：4 个分析 Agent 产出 19 条 findings 中 12 条带引用，
+    但最终报告 7 条里只有 1 条带引用 —— 剩下的依据全在这个环节被丢掉。
+
+    ## 匹配口径
+
+    用与 `_covered` 一致的前缀匹配（24 字），只做**单向转移**：
+    - 只给还没有 citations 的规则条目补；
+    - 同一条规则条目只接收一次（避免把 5 条不同结论的依据全堆到一条上）。
+    """
+    for llm_item in llm_items or []:
+        cites = llm_item.get("citations") or []
+        if not cites:
+            continue
+        for rule_item in rule_items or []:
+            if rule_item.get("citations"):
+                continue
+            if _covered(rule_item, [llm_item]):
+                rule_item["citations"] = cites
+                break
 
 
 def _action_items(findings: list[dict]) -> list[str]:

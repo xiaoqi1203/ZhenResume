@@ -28,6 +28,10 @@ class AgentContext:
     parsed_resume: ParsedResume
     parsed_jd: ParsedJd
     role_family: str = "general"
+    # 本次任务的模式：fixed | agentic。
+    # 只有 qc 的定稿需要它（决定要不要出深度分），但它是"任务属性"而非"节点产出"，
+    # 所以放在共享上下文里，避免每个节点各传一遍。
+    workflow_mode: str = "fixed"
     knowledge_hits: list[dict] = field(default_factory=list)
     prompt_overrides: dict[str, str] = field(default_factory=dict)
 
@@ -38,9 +42,15 @@ class AgentContext:
     action_items: list[str] = field(default_factory=list)
     knowledge_refs: list[dict] = field(default_factory=list)
     scores: dict = field(default_factory=dict)
+    # 双分制的深度分（仅 agentic 模式产出）：同一套公式，但模型补充的发现项也参与扣分。
+    # fixed 模式下保持空 dict，序列化时出参为 null —— 前端据此隐藏"深度分"卡片。
+    depth_scores: dict = field(default_factory=dict)
     summary: str = ""
     qc_report: dict = field(default_factory=dict)
     outputs: dict = field(default_factory=dict)
+
+    # report 阶段定稿、qc 之后仍需要沿用的结论（避免下游再算一遍 → 两处结果打架）
+    risk_level: str = ""
 
     def add_findings(self, items: list[dict]) -> None:
         self.findings.extend(items or [])

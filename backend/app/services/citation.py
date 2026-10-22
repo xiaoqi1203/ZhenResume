@@ -7,7 +7,11 @@ Agent 能产出"看起来很合理"的引用，但**引用是否真的支持结�
 1. `chunk_id` 必须真实存在；
 2. `quote` 必须能在**该切片文本**中逐字定位（容忍换行/多余空白）；
 3. 同一 (chunk_id, quote) 只保留一条；
-4. 无法校验的引用**直接丢弃**，并把原因计入统计（不静默，也不阻断主链路）。
+4. 无法校验的引用**直接丢弃**，并把原因计入统计（不静默，也不阻断主链路）；
+5. 若调用方给出本次检索命中的 chunk 集合（`retrieved_chunk_ids`），
+   则 `chunk_id` 还必须**真的被本次检索返回过** —— 否则模型只要猜中一个
+   存在的 chunk_id 就能挂上引用，而提示词把"必须检索返回过"写成铁律。
+   该参数默认 `None`（不校验 provenance），保证既有调用点行为逐位不变。
 
 挂载策略（`attach_to_findings`）：
 - 优先按 Agent 显式给出的 `finding_index` 挂载；
@@ -41,12 +45,26 @@ def verify_citations(
     citations: Iterable[Any] | None,
     *,
     limit: int = 20,
+    retrieved_chunk_ids: set[str] | None = None,
 ) -> tuple[list[dict], dict]:
     """校验引用，返回 `(通过的引用, 统计)`。
 
     通过的引用会补上 `doc_title` / `scope` / `chunk_chars`，便于渲染与展示。
+
+    `retrieved_chunk_ids`：
+    - `None`（默认）：不校验 provenance，行为与旧版**逐位相同**（老调用点零回归）；
+    - 传入集合：`chunk_id` 不在集合里 → 计入 `rejected_not_retrieved` 并丢弃该引用。
+      集合应为**本次**检索（`kb_search` / `read_chunk`）真实返回过的 chunk_id。
     """
-    stats = {"total": 0, "verified": 0, "rejected_missing_chunk": 0, "rejected_quote_not_found": 0, "rejected_duplicate": 0}
+    stats = {
+        "total": 0,
+        "verified": 0,
+        "rejected_missing_chunk": 0,
+        "rejected_quote_not_found": 0,
+        "rejected_duplicate": 0,
+        # 新增项：必须恒存在（默认 0），否则既有断言/前端读取会 KeyError
+        "rejected_not_retrieved": 0,
+    }
     out: list[dict] = []
     seen: set[tuple[str, str]] = set()
 
@@ -61,9 +79,17 @@ def verify_citations(
             stats["rejected_quote_not_found"] += 1
             continue
 
+        # provenance 校验：只认本次检索真的返回过的切片（None = 不校验，保持旧行为）。
+        # 放在"chunk 存在"之后、"quote 定位"之前：
+        # - 不存在的 chunk_id 仍计入 rejected_missing_chunk（既有统计语义不变）；
+        # - 存在但没被检索返回的，才归入新统计项，且省掉一次文本归一化。
         chunk = db.get(KnowledgeChunk, chunk_id)
         if chunk is None:
             stats["rejected_missing_chunk"] += 1
+            continue
+
+        if retrieved_chunk_ids is not None and chunk_id not in retrieved_chunk_ids:
+            stats["rejected_not_retrieved"] += 1
             continue
 
         text = chunk.chunk_text or ""
@@ -141,6 +167,10 @@ def attach_to_findings(findings: list[dict], verified: list[dict]) -> tuple[list
                 "doc_title": citation.get("doc_title") or "",
                 "quote": citation["quote"],
                 "verified": True,
+                # ★ 来源标记：本函数只服务 qc 之后的 knowledge_evidence Agent，
+                #   与分析阶段产出的引用（source="analyzer"）在同一个 citations 数组里共存，
+                #   前端/报告靠它区分「结论可信」与「生成有据」。
+                "source": "evidence",
             }
         )
         stats["attached"] += 1

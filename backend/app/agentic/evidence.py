@@ -64,11 +64,26 @@ SPEC = AgentSpec(
     finish_model=EvidencePack,
     finish_description="提交知识库引用列表（chunk 级，可逐字核对）并结束。",
     budget=AgentBudget(
-        max_model_calls=10,
-        max_tool_calls=40,
-        # Agentic RAG 的"多轮"上限：4 轮足够覆盖 能力基准/表达规范/结构/合规 四类依据
-        max_retrieval_rounds=4,
-        wall_clock_s=180,
+        # ⚠️ 预算必须按**实测自然收敛值**给，不能按"最少步数"给。
+        #
+        # 历史：第一版给 10 次往返 / 40 次工具 / 4 轮检索 / 180s（自然收敛，稳定 done）。
+        # 后来为压成本收紧到 6 / 24 / 3 / 90，注释里写"自然收敛需要 5–6 次"——
+        # **这个判断是错的**。2026-10-21 实测（真实简历 + 后端 JD，同一输入）：
+        #
+        #     6 次往返  → status=truncated，model_calls=8（超限），citations=0，¥0.0647
+        #     8 次往返  → status=done，     model_calls=7，        citations=11，¥0.0921
+        #
+        # 即：模型第 7 次往返才是 `finish`。给 6 次 = 每次都截断 = **引用永远为空**，
+        # 而"结论级引用"正是这条 Agentic RAG 链路唯一的价值来源 —— 省 ¥0.03
+        # 换来功能完全失效，是负收益。`scripts/smoke_agentic_report` 因此稳定失败。
+        #
+        # 现在给 9 次往返（自然值 7 的 ~1.3 倍，留一次重试余量）。
+        max_model_calls=9,
+        max_tool_calls=30,
+        # 检索轮次是"多轮"的实质：3 轮足够覆盖 能力基准/表达规范/合规 三类依据；
+        # 第 4 轮在实测里只多带来 1 次重复 query（retrieval_blocked=2 就是被拦下的那两次）。
+        max_retrieval_rounds=3,
+        wall_clock_s=120,
     ),
 )
 

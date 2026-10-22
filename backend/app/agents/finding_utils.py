@@ -3,7 +3,15 @@
 这是「模型输出不可信」与「前端契约必须稳定」之间的那道闸门：
 - category / severity 只允许白名单值，越界一律回落到安全默认；
 - evidence 由后端**重新定位**（不信模型给的 offset），定位不到就打 unverified 标记；
+- **改写句里的数字必须在原文可追溯**，否则替换为占位符（见 `scrub_unsourced_numbers`）；
 - 剔除缺字段、重复、空话条目，保证报告里每一条都能落地。
+
+## 为什么数字护栏放在这一层（而不是只放在 agent 线）
+
+第一版只加在 `workflow/agent_nodes._to_findings`（agent 线的分析节点）。
+实测（2026-10-21，扩库后）：`suggestion_agent` 走的是**本模块**的 `coerce_findings`，
+它的改写句绕过了护栏，于是又出现了编造数字（"P99 降 75%"，简历里没有 75）。
+护栏必须盖住**所有**产出 finding 的路径，否则换个节点就漏。
 """
 
 from __future__ import annotations
@@ -20,6 +28,56 @@ VALID_CATEGORY = {"ats", "impact", "clarity", "risk", "gap"}
 EMPTY_TALK_RE = re.compile(r"^(建议)?(优化|完善|提升|加强|改进|注意|丰富)(一下)?(表述|内容|描述|简历)?[。.]?$")
 
 MAX_FINDINGS = 12
+
+# --------------------------------------------------------------------------- #
+# 改写句数字护栏（与 workflow/agent_nodes._NUM_RE 同一口径）
+# --------------------------------------------------------------------------- #
+# 排除嵌在字母/数字里的数字（`P1` / `K8s` / `S3`）；百分号与数字算一个整体。
+_NUM_RE = re.compile(r"(?<![A-Za-z0-9])\d+(?:\.\d+)?%?(?![A-Za-z])")
+# 占位符里的数字是让用户自己填的，不算编造
+_PLACEHOLDER_RE = re.compile(r"\[(?:补充|补充指标)[^\]]*\]")
+# 占位符哨兵用私用区字符（不含数字），避免哨兵本身被当数字替换
+_SENTINEL_BASE = 0xE000
+
+
+def _numbers_of(text: str) -> list[str]:
+    return _NUM_RE.findall(_PLACEHOLDER_RE.sub(" ", text or ""))
+
+
+def scrub_unsourced_numbers(rewritten: str, resume_text: str) -> str:
+    """把改写句里**简历原文没有**的数字替换成 `[补充：原数字]` 占位符。
+
+    ## 为什么是"替换"而不是"丢弃整条"
+
+    数字没依据不代表结论错 —— 「为高频表补联合索引，慢查询下降 __%」这条建议本身是对的，
+    错的是模型自作主张填了一个具体值。换成占位符既保住建议，又不给用户假数据。
+
+    ## 已知局限（诚实记录）
+
+    - 只做**字面比对**，不做量纲归一：原文写「100 万」而改写写「1000000」会被判为无据，
+      结果是多替换一个占位符（保守方向，不会放过编造）；
+    - 不做上下文绑定：原文别处出现过 `85` 就认为有据，即使它跟 CPU 无关。
+      这是刻意选择的保守口径 —— 宁可少拦，也不要误改用户本来正确的改写句。
+    """
+    if not rewritten:
+        return rewritten
+    source_nums = set(_numbers_of(resume_text))
+
+    def _replace(match: re.Match[str]) -> str:
+        num = match.group(0)
+        return num if num in source_nums else f"[补充：{num}]"
+
+    holders: list[str] = []
+
+    def _stash(m: re.Match[str]) -> str:
+        holders.append(m.group(0))
+        return chr(_SENTINEL_BASE + len(holders) - 1)
+
+    masked = _PLACEHOLDER_RE.sub(_stash, rewritten)
+    scrubbed = _NUM_RE.sub(_replace, masked)
+    for i, h in enumerate(holders):
+        scrubbed = scrubbed.replace(chr(_SENTINEL_BASE + i), h)
+    return scrubbed
 
 
 def resolve_evidence(ctx: AgentContext, quote: str, field: str | None = None) -> dict:
@@ -120,7 +178,10 @@ def coerce_findings(
             "original_text": original,
             "issue": issue,
             "suggestion": suggestion,
-            "rewritten_text": rewritten,
+            # ★ 数字护栏（盖住所有产出 finding 的路径，不只 agent 线）：
+            #   改写句里原文没有的数字一律换成占位符。实测（2026-10-21）：
+            #   suggestion_agent 绕过 agent_nodes 的护栏后，写出"P99 降 75%"（简历无 75）。
+            "rewritten_text": scrub_unsourced_numbers(rewritten, ctx.resume_text),
             "evidence": None,  # 下面统一构造
             "origin": origin,
         }
