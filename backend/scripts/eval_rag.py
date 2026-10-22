@@ -107,9 +107,14 @@ async def agentic_arm(resume_text: str, jd_text: str, parsed_resume, parsed_jd, 
     for hit in run.trace.get("retrieval_hits") or []:
         retrieved.extend(hit.get("chunk_ids") or [])
     with session_scope() as db:
-        verified, vstats = verify_citations(db, (run.output or {}).get("citations") or [])
+        # 评测口径与产品链路一致：只认本次检索真实返回过的切片（provenance 校验）
+        verified, vstats = verify_citations(
+            db, (run.output or {}).get("citations") or [], retrieved_chunk_ids=set(retrieved)
+        )
     return {
         "retrieved": list(dict.fromkeys(retrieved)),
+        # 逐轮命中明细（同预算口径 = 只看第 1 轮），结构见 agentic/runtime.py::_BudgetedRunner.kb_hits
+        "retrieval_hits": run.trace.get("retrieval_hits") or [],
         "citations": [v["chunk_id"] for v in verified],
         "queries": run.trace.get("retrieval_queries") or [],
         "rounds": run.trace.get("retrieval_rounds") or 0,
@@ -127,6 +132,29 @@ def ratio(hit: list[str], gold: list[str]) -> float:
     if not gold:
         return 0.0
     return len(set(hit) & set(gold)) / len(set(gold))
+
+
+def first_round_recall(retrieval_hits: list[dict], gold: list[str], k: int) -> float:
+    """**同预算口径**：只算 Agent 第 1 次 `kb_search` 的 top-k 覆盖。
+
+    ## 为什么不能用"并集的前 k 条"（第一版写错了，这里记录原因）
+
+    第一版把多轮结果按轮次顺序展平再取前 k 条。这个口径是错的 —— 展平顺序是
+    "第 1 轮的全部 → 第 2 轮的全部"，前 5 条基本全被第 1 轮占满，等价于
+    "第 1 轮 top-k"，但第 1 轮的 top_k 是模型自己定的（可能 3 条也可能 10 条），
+    所以并不是"同样预算"。实测因此得到 75.8% 这种反直觉数字。
+
+    正确口径：**同样次数的检索调用**。
+    - fixed 臂 = 1 次 `rag.search(top_k=5)`；
+    - agentic 臂同预算 = 第 1 次 `kb_search` 的 top-k（k 与 fixed 相同）。
+
+    多轮的价值应该单独用"并集 vs 单轮"表达，并**明确标注预算不对等**，
+    而不是把两者混成一个"同预算"数字。
+    """
+    if not retrieval_hits or not gold:
+        return 0.0
+    first = (retrieval_hits[0].get("chunk_ids") or [])[:k]
+    return ratio(first, gold)
 
 
 async def main() -> int:
@@ -162,6 +190,19 @@ async def main() -> int:
             "agentic": {
                 **agent,
                 "gold_recall": ratio(agent["retrieved"], gold),
+        # ★ 同预算口径：只算 Agent **第 1 次检索**的 top-k，与 fixed 的 1 次 top_k=5 对齐。
+        #   多轮并集的增益单独看 `gold_recall`（并标注取回条数更多，预算不对等）。
+        #
+        #   ⚠️ **本指标噪声极大，不可单独用于裁决**：实测三次独立运行
+        #   （同样的代码、同样的 case）分别得到 55.0% / 58.3% / 41.7%，
+        #   单例区间 0.00–0.67、标准差 0.11–0.29。原因是第 1 轮只有 1 个 query，
+        #   模型选哪个方向高度随机，而 gold 只标了 3–4 个切片。
+        #   要做"检索器改动是否有效"的裁决，请用 `scripts/eval_retrieval.py`
+        #   （检索器级、同 query、10 例，无模型随机性）。
+        "gold_recall_first_round": first_round_recall(
+            agent.get("retrieval_hits") or [], gold, len(fixed["chunk_ids"]) or 5
+        ),
+                "retrieved_count": len(agent["retrieved"]),
                 "citation_gold_rate": (len(set(agent["citations"]) & set(gold)) / len(agent["citations"]))
                 if agent["citations"] else 0.0,
                 "verified_rate": (agent["verify"]["verified"] / agent["verify"]["total"]) if agent["verify"]["total"] else 0.0,
@@ -170,7 +211,9 @@ async def main() -> int:
         rows.append(row)
         print(
             f"{case['id']:9s} gold={len(gold)} | fixed recall={row['fixed']['gold_recall']:.2f} | "
-            f"agentic recall={row['agentic']['gold_recall']:.2f} cited={len(agent['citations'])} "
+            f"agentic recall={row['agentic']['gold_recall']:.2f}"
+            f"（第1轮 {row['agentic']['gold_recall_first_round']:.2f}，并集取回 {len(agent['retrieved'])} 条）"
+            f" cited={len(agent['citations'])} "
             f"cite_gold={row['agentic']['citation_gold_rate']:.2f} rounds={agent['rounds']} "
             f"¥{agent['cost']:.3f} {agent['latency_ms']/1000:.0f}s [{agent['status']}]"
         )
@@ -183,6 +226,11 @@ async def main() -> int:
         "cases": len(rows),
         "fixed_gold_recall": statistics.mean(r["fixed"]["gold_recall"] for r in rows),
         "agentic_gold_recall": statistics.mean(r["agentic"]["gold_recall"] for r in rows),
+        # ★ 同预算口径（fixed 1 次检索 vs agentic 第 1 次检索）：这才是"检索更聪明"的可比数字
+        "agentic_gold_recall_first_round": statistics.mean(
+            r["agentic"]["gold_recall_first_round"] for r in rows
+        ),
+        "agentic_avg_retrieved": statistics.mean(r["agentic"]["retrieved_count"] for r in rows),
         # 是否至少引用到一条 gold（比"引用命中率"更公平：一条结论常有多条合理依据）
         "agentic_gold_cited_rate": statistics.mean(
             1.0 if (set(r["agentic"]["citations"]) & set(r["gold"])) else 0.0 for r in rows
@@ -196,8 +244,11 @@ async def main() -> int:
         "fixed_cannot_cite": True,
     }
     print("\n=== 汇总（%d 个案例）===" % summary["cases"])
-    print(f"  检索覆盖 gold（固定检索）  : {summary['fixed_gold_recall']:.1%}")
-    print(f"  检索覆盖 gold（Agent 多轮）: {summary['agentic_gold_recall']:.1%}")
+    print(f"  检索覆盖 gold（固定检索 top_k=5）  : {summary['fixed_gold_recall']:.1%}")
+    print(f"  检索覆盖 gold（Agent 多轮**并集**）  : {summary['agentic_gold_recall']:.1%}"
+          f"  ← 预算不对等（取回 {summary['agentic_avg_retrieved']:.1f} 条/例），不能直接比")
+    print(f"  检索覆盖 gold（Agent **第 1 轮**）  : {summary['agentic_gold_recall_first_round']:.1%}"
+          "  ← 与 fixed 同预算（都只检索 1 次），可比的净增益")
     print(f"  引用命中 gold（Agent，宽口径）: {summary['agentic_citation_gold_rate']:.1%}")
     print(f"  至少引用到 1 条 gold（Agent）: {summary['agentic_gold_cited_rate']:.1%}")
     print(f"  引用逐字校验通过（Agent）  : {summary['agentic_verified_rate']:.1%}")

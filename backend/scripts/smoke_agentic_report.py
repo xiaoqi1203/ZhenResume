@@ -54,7 +54,11 @@ async def main() -> int:
             return 1
         task = AnalysisTask(
             user_id=resume.user_id, resume_id=resume.id, jd_id=jd.id,
-            type="single", status="pending", progress=0.0,
+            # 必须显式写 agentic：`AnalysisTask.mode` 默认 "fixed"，而
+            # `engine._task_workflow_mode()` 会**按任务**覆盖全局 WORKFLOW_MODE。
+            # 不写这一行，本脚本即使设了环境变量也会跑成 fixed 图（没有 agentic_evidence
+            # 节点 → agent_trace 为空 → 本脚本的验收断言必然失败）。
+            type="single", mode="agentic", status="pending", progress=0.0,
         )
         db.add(task)
         db.flush()
@@ -83,6 +87,10 @@ async def main() -> int:
         for f in findings:
             ev = f.evidence_ref or {}
             raw_citations.extend(ev.get("citations") or [])
+        # 这里是从库里读**已落库**的 citations 做复核，不传 retrieved_chunk_ids：
+        # - 这份数组里可能混有分析阶段（source="analyzer"）的引用，它们来自 fixed 检索，
+        #   不属于本次 agentic 的 retrieval_hits，硬塞集合会把合法引用误判成"未检索到"；
+        # - 保持 None 即维持本脚本原有语义（chunk 存在 + quote 可定位）。
         verified, vstats = verify_citations(db, raw_citations)
         scores = {
             "overall": report.overall_score, "ats": report.ats_score, "impact": report.impact_score,
@@ -106,7 +114,8 @@ async def main() -> int:
     print(f"\n结论级引用: 报告 findings 共 {len(findings)} 条，带 citations 的 "
           f"{len([f for f in findings if (f.evidence_ref or {}).get('citations')])} 条")
     print(f"  服务端复核: 引用 {vstats['total']} 条｜通过 {vstats['verified']}｜"
-          f"chunk 不存在 {vstats['rejected_missing_chunk']}｜quote 定位失败 {vstats['rejected_quote_not_found']}")
+          f"chunk 不存在 {vstats['rejected_missing_chunk']}｜quote 定位失败 {vstats['rejected_quote_not_found']}｜"
+          f"未检索到 {vstats['rejected_not_retrieved']}（此处不传本次检索集合，恒为 0）")
 
     ok = (
         len(step_names) == len(CONTRACT_STEPS)

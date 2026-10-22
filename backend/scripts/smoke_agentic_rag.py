@@ -76,10 +76,18 @@ async def main() -> int:
     citations = (run.output or {}).get("citations") or []
     raw_citations = [c if isinstance(c, dict) else c.model_dump() for c in citations]
     print(f"\n  Agent 产出引用 {len(raw_citations)} 条")
+    # 本次真正被检索返回过的切片（trace.retrieval_hits 由 _BudgetedRunner.kb_hits 记录）。
+    # 产品链路已做 provenance 校验，冒烟脚本按同一口径复核，才能发现"猜 chunk_id"。
+    retrieved_ids: set[str] = set()
+    for hit in t.get("retrieval_hits") or []:
+        retrieved_ids.update(str(cid) for cid in (hit.get("chunk_ids") or []) if cid)
     with session_scope() as db:
-        verified, vstats = verify_citations(db, raw_citations)
+        verified, vstats = verify_citations(
+            db, raw_citations, retrieved_chunk_ids=retrieved_ids
+        )
     print(f"  服务端校验: 总数 {vstats['total']}｜通过 {vstats['verified']}｜"
-          f"chunk 不存在 {vstats['rejected_missing_chunk']}｜quote 定位失败 {vstats['rejected_quote_not_found']}｜重复 {vstats['rejected_duplicate']}")
+          f"chunk 不存在 {vstats['rejected_missing_chunk']}｜quote 定位失败 {vstats['rejected_quote_not_found']}｜"
+          f"重复 {vstats['rejected_duplicate']}｜未检索到 {vstats['rejected_not_retrieved']}")
     for c in verified:
         print(f"    OK {c['chunk_id'][:8]}《{c.get('doc_title') or ''}》 {c['quote'][:50]!r}")
 

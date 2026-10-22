@@ -200,7 +200,14 @@ def cosine(a: list[float] | None, b: list[float] | None) -> float:
 
 
 def lexical_overlap(query: str, text: str) -> float:
-    """词面重合度，作为向量分的补充信号（对短关键词检索更稳）。"""
+    """词面重合度，作为向量分的补充信号（对短关键词检索更稳）。
+
+    ⚠️ 这是**朴素的召回率口径**（|q∩t|/|q|），有两个已知缺陷：
+    1. **不看 IDF**：高频虚词（"的""能力""要求"）与稀有技术词权重相同；
+    2. **不看文档长度**：长切片天然更容易命中，会系统性占优。
+    实测（2026-10-21）它足以支撑初排，但作为**重排**信号不够 —— 见 `bm25_scores`。
+    保留它是因为既有调用点与回归断言都按这个口径写过，改口径会牵动排序稳定性。
+    """
     q = set(tokenize(query))
     if not q:
         return 0.0
@@ -208,3 +215,75 @@ def lexical_overlap(query: str, text: str) -> float:
     if not t:
         return 0.0
     return len(q & t) / len(q)
+
+
+# --------------------------------------------------------------------------- #
+# BM25（重排用，纯 Python 零依赖）
+# --------------------------------------------------------------------------- #
+# 为什么自己实现而不是装 rank_bm25 / sentence-transformers：
+# - cross-encoder 重排需要 torch（约 2GB 依赖），对当前 MVP 不成比例；
+# - BM25 只需词频统计，几十行代码，且在**短查询 + 短切片**场景下是强基线；
+# - 项目已有 `tokenize`（中文单字+双字、英文词），直接复用可保证与索引同口径。
+#
+# 参数取标准默认值（k1=1.5, b=0.75），未针对本库调参 —— 先拿到"有没有用"的证据，
+# 再谈调参。调参必须用 `scripts/eval_retrieval.py` 的对照臂，不能凭感觉。
+BM25_K1 = 1.5
+BM25_B = 0.75
+
+
+def bm25_scores(
+    query: str,
+    texts: list[str],
+    *,
+    k1: float = BM25_K1,
+    b: float = BM25_B,
+) -> list[float]:
+    """对一批文本计算 BM25 分（IDF 与平均长度按**这批文本**统计）。
+
+    ## 为什么 IDF 必须按全库算
+
+    IDF 的分母是"包含该词的文档数"。如果只对候选集算，稀有词会因为候选集小而
+    被低估，重排就失去意义。调用方应把**全部切片**传进来（`search()` 本来就是全表扫描，
+    多算一遍统计的代价可以忽略）。
+
+    ## 返回
+
+    与 `texts` 等长的分数列表（未归一化，只在同一批内可比）。
+    """
+    if not texts:
+        return []
+    q_tokens = list(dict.fromkeys(tokenize(query)))  # 去重但保序：BM25 里 query 词不重复计数
+    if not q_tokens:
+        return [0.0] * len(texts)
+
+    doc_tokens: list[list[str]] = [tokenize(t) for t in texts]
+    doc_lens = [len(toks) for toks in doc_tokens]
+    n_docs = len(texts)
+    avgdl = (sum(doc_lens) / n_docs) if n_docs else 0.0
+
+    # 文档频率（每个 query 词在多少篇里出现）
+    df: dict[str, int] = {}
+    for token in q_tokens:
+        df[token] = sum(1 for toks in doc_tokens if token in set(toks))
+
+    # IDF：用 BM25 常见的平滑形式，保证 df 接近 n_docs 时仍为正
+    idf: dict[str, float] = {}
+    for token in q_tokens:
+        n_qi = df.get(token, 0)
+        idf[token] = math.log(1 + (n_docs - n_qi + 0.5) / (n_qi + 0.5))
+
+    scores: list[float] = []
+    for toks, dl in zip(doc_tokens, doc_lens):
+        if not toks:
+            scores.append(0.0)
+            continue
+        tf: dict[str, int] = {}
+        for token in toks:
+            if token in idf:
+                tf[token] = tf.get(token, 0) + 1
+        score = 0.0
+        for token, freq in tf.items():
+            denom = freq + k1 * (1 - b + b * (dl / avgdl if avgdl else 1.0))
+            score += idf[token] * (freq * (k1 + 1)) / denom if denom else 0.0
+        scores.append(score)
+    return scores
